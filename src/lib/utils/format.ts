@@ -84,7 +84,8 @@ export function formatClassification(classification: string): string {
     .join(" ");
 }
 
-export function formatDependencyType(depType: string): string {
+export function formatDependencyType(depType: string | null | undefined): string {
+  if (!depType) return "Unknown";
   return depType
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))

@@ -53,3 +53,36 @@ export function TableSkeleton({ rows = 6 }: { rows?: number }) {
 export function LineSkeleton({ className }: { className?: string }) {
   return <Skeleton className={cn("h-4 w-full", className)} />;
 }
+
+export function DashboardSkeleton() {
+  return (
+    <div className="flex flex-col gap-6">
+      <StatsGridSkeleton />
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+        <div className="flex flex-col gap-6 xl:col-span-2">
+          <Card>
+            <CardHeader>
+              <Skeleton className="h-4 w-40" />
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              <Skeleton className="h-8 w-56" />
+              <Skeleton className="h-3 w-full" />
+              <Skeleton className="h-3 w-2/3" />
+            </CardContent>
+          </Card>
+          <GraphSkeleton className="min-h-100" />
+        </div>
+        <div className="flex flex-col gap-6">
+          <Card>
+            <CardHeader>
+              <Skeleton className="h-4 w-32" />
+            </CardHeader>
+            <CardContent>
+              <Skeleton className="h-40 w-full rounded-lg" />
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+}
