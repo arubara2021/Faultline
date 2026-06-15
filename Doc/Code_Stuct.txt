@@ -1,0 +1,135 @@
+faultline/
+│
+├── app/
+│   ├── layout.tsx
+│   ├── page.tsx
+│   ├── globals.css
+│   │
+│   └── api/
+│       ├── ingest/
+│       │   └── route.ts
+│       ├── health/
+│       │   └── route.ts
+│       ├── reconcile/
+│       │   └── route.ts
+│       ├── incidents/
+│       │   ├── route.ts
+│       │   └── [id]/
+│       │       └── route.ts
+│       ├── blast-radius/
+│       │   └── route.ts
+│       ├── graph/
+│       │   └── route.ts
+│       ├── resolve/
+│       │   └── route.ts
+│       ├── services/
+│       │   └── route.ts
+│       └── summary/
+│           └── route.ts
+│
+├── components/
+│   │
+│   ├── ui/
+│   │   ├── button.tsx
+│   │   ├── card.tsx
+│   │   ├── badge.tsx
+│   │   ├── dialog.tsx
+│   │   ├── tabs.tsx
+│   │   ├── tooltip.tsx
+│   │   ├── skeleton.tsx
+│   │   ├── separator.tsx
+│   │   ├── input.tsx
+│   │   ├── label.tsx
+│   │   ├── select.tsx
+│   │   ├── textarea.tsx
+│   │   └── sonner.tsx
+│   │
+│   ├── dashboard/
+│   │   ├── incident-overview.tsx
+│   │   ├── blast-radius-list.tsx
+│   │   ├── root-cause-panel.tsx
+│   │   ├── revenue-timeline.tsx
+│   │   ├── revenue-ticker.tsx
+│   │   ├── incident-timer.tsx
+│   │   ├── healthy-state.tsx
+│   │   ├── stats-grid.tsx
+│   │   └── incident-summary.tsx
+│   │
+│   ├── graph/
+│   │   ├── graph-canvas.tsx
+│   │   ├── service-node.tsx
+│   │   ├── dependency-edge.tsx
+│   │   └── depth-legend.tsx
+│   │
+│   ├── layout/
+│   │   ├── header.tsx
+│   │   ├── sidebar.tsx
+│   │   └── mobile-nav.tsx
+│   │
+│   └── shared/
+│       ├── animated-counter.tsx
+│       ├── loading-skeleton.tsx
+│       ├── empty-state.tsx
+│       ├── error-boundary.tsx
+│       ├── status-badge.tsx
+│       ├── depth-indicator.tsx
+│       └── confirm-dialog.tsx
+│
+├── lib/
+│   │
+│   ├── db/
+│   │   ├── schema.ts
+│   │   ├── index.ts
+│   │   └── migrations/
+│   │
+│   ├── graph/
+│   │   ├── traversal.ts
+│   │   ├── confidence.ts
+│   │   ├── ingest.ts
+│   │   └── stale.ts
+│   │
+│   ├── detection/
+│   │   ├── health-checker.ts
+│   │   ├── error-detector.ts
+│   │   └── latency-detector.ts
+│   │
+│   ├── impact/
+│   │   ├── scorer.ts
+│   │   └── snapshot-refresh.ts
+│   │
+│   ├── ai/
+│   │   └── summary.ts
+│   │
+│   ├── hooks/
+│   │   ├── use-incident.ts
+│   │   ├── use-blast-radius.ts
+│   │   ├── use-service-graph.ts
+│   │   ├── use-services.ts
+│   │   └── use-resolve.ts
+│   │
+│   ├── utils/
+│   │   ├── format.ts
+│   │   ├── cn.ts
+│   │   ├── dates.ts
+│   │   └── colors.ts
+│   │
+│   ├── types/
+│   │   └── index.ts
+│   │
+│   └── config.ts
+│
+├── scripts/
+│   ├── seed.ts
+│   └── migrate.ts
+│
+├── public/
+│   └── fonts/
+│
+├── drizzle.config.ts
+├── tailwind.config.ts
+├── next.config.ts
+├── tsconfig.json
+├── postcss.config.js
+├── .env.local
+├── .env.example
+└── package.json
