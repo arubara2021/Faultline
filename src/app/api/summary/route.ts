@@ -147,7 +147,7 @@ export async function POST(request: NextRequest) {
 
     const blastRadiusSummary = `${affectedCount} services affected across ${maxDepth} levels of dependency depth. ${customerFacing.length} customer-facing services impacted directly.`;
 
-    const revenueImpactSummary = `$$$${totalRevenuePerMinDollars.toFixed(2)}/min revenue at risk. Total estimated impact: $${totalAccumulatedImpactDollars.toFixed(2)} over {minutesElapsed} minutes.`;
+    const revenueImpactSummary = `$${totalRevenuePerMinDollars.toFixed(2)}/min revenue at risk. Total estimated impact: $${totalAccumulatedImpactDollars.toFixed(2)} over ${minutesElapsed} minutes.`;
 
     const fixPriority = upstreamCandidates.length === 0
       ? `Investigate ${serviceName} directly. No upstream candidates identified — the root cause likely lies within this service. Signal indicates: ${signalShort(sd)}. Resolution of this service should restore all ${affectedCount} downstream dependents.`
