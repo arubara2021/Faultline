@@ -23,10 +23,6 @@ import { mutate } from "swr";
 
 interface IncidentOverviewProps {
   incidentId: string;
-  rootServiceName: string;
-  failureType: string;
-  severity: string;
-  startedAt: string;
 }
 
 function money(cents: number): string {
@@ -36,15 +32,14 @@ function money(cents: number): string {
   })}`;
 }
 
-export function IncidentOverview({
-  incidentId,
-  rootServiceName,
-  failureType,
-  severity,
-  startedAt,
-}: IncidentOverviewProps) {
+export function IncidentOverview({ incidentId }: IncidentOverviewProps) {
   const { data } = useIncident(incidentId);
   const { trigger, isMutating } = useResolve();
+
+  const rootServiceName = data?.rootCause.serviceName ?? "";
+  const failureType = data?.rootCause.failureType ?? "";
+  const severity = data?.rootCause.severity ?? "down";
+  const startedAt = data?.incident.startedAt ?? new Date().toISOString();
 
   const ratePerMin = data?.revenueImpact.totalRevenuePerMinCents ?? 0;
   const topAffected = (data?.blastRadius ?? [])
