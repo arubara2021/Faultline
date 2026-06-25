@@ -75,7 +75,7 @@ export function RevenueTimeline({ incidentId, startedAt }: RevenueTimelineProps)
               tick={{ fontFamily: "var(--font-mono)" }}
             />
             <YAxis
-              tickFormatter={(v) => `$${v >= 1000 ? `{(v / 1000).toFixed(1)}k` : v}`}
+              tickFormatter={(v) => `$${v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v}`}
               stroke="#475569"
               fontSize={10}
               tickLine={false}
@@ -93,7 +93,7 @@ export function RevenueTimeline({ incidentId, startedAt }: RevenueTimelineProps)
                 color: "#F1F5F9",
               }}
               labelStyle={{ color: "#94A3B8" }}
-              formatter={(value: number) => [`$$$${value.toLocaleString("en-US")}`, "Total"]}
+              formatter={(value) => [`$${Number(value ?? 0).toLocaleString("en-US")}`, "Total"]}
               labelFormatter={(label) => `${label} min elapsed`}
             />
             <Area

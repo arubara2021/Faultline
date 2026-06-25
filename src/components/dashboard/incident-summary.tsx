@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   ChevronDown, Copy, Check,
   AlertTriangle, Target, Zap, DollarSign, Wrench, BarChart3,
-  Clock, Network
+  Clock, Network, FileText
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useIncidentSummary } from "@/lib/hooks/use-summary";
@@ -153,7 +153,7 @@ export function IncidentSummary({ incidentId }: IncidentSummaryProps) {
             >
               <div className="border-t border-white/[0.04] px-4 py-3">
                 <p className="text-[11px] leading-relaxed text-[var(--fl-text-tertiary)]">
-                  {summary.ai.fullSummary}
+                  {summary.summary}
                 </p>
               </div>
             </motion.div>

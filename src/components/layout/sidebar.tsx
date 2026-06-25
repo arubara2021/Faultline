@@ -280,7 +280,7 @@ function IncidentSidebarContent({ incidentId }: { incidentId: string }) {
   const maxDepth = active?.maxDepth ?? 0;
   const signalDetails = detail?.rootCause?.signalDetails;
 
-  const blastByDepth = new Map<number, typeof detail.blastRadius>();
+  const blastByDepth = new Map<number, NonNullable<typeof detail>['blastRadius']>();
   if (detail?.blastRadius) {
     for (const entry of detail.blastRadius) {
       const list = blastByDepth.get(entry.depth) ?? [];
@@ -343,18 +343,18 @@ function IncidentSidebarContent({ incidentId }: { incidentId: string }) {
             </div>
             {signalDetails && typeof signalDetails === "object" && (
               <div className="space-y-1.5 border-t border-red-500/10 px-3.5 py-3">
-                {signalDetails.connection_pool && (
-                  <SignalDetail label="Connection pool" value={String(signalDetails.connection_pool)} breached />
-                )}
-                {signalDetails.multiplier && (
-                  <SignalDetail label="Latency multiplier" value={`{signalDetails.multiplier}x`} breached />
-                )}
-                {signalDetails.error_rate && (
-                  <SignalDetail label="Error rate" value={String(signalDetails.error_rate)} breached />
-                )}
-                {signalDetails.threshold && (
-                  <SignalDetail label="Threshold" value={String(signalDetails.threshold)} />
-                )}
+              {signalDetails.connection_pool != null && (
+                <SignalDetail label="Connection pool" value={String(signalDetails.connection_pool)} breached />
+              )}
+              {signalDetails.multiplier != null && (
+                <SignalDetail label="Latency multiplier" value={`${signalDetails.multiplier}x`} breached />
+              )}
+              {signalDetails.error_rate != null && (
+                <SignalDetail label="Error rate" value={String(signalDetails.error_rate)} breached />
+              )}
+              {signalDetails.threshold != null && (
+                <SignalDetail label="Threshold" value={String(signalDetails.threshold)} />
+              )}
               </div>
             )}
           </div>

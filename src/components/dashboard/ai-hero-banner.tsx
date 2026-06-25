@@ -60,7 +60,7 @@ export function AiHeroBanner({ incidentId }: AiHeroBannerProps) {
   const affectedCount = incident?.incident?.affectedServiceCount ?? summary?.impact?.totalServicesAffected ?? 0;
   const maxDepth = incident?.incident?.maxDepth ?? 0;
   const revenuePerMin = incident?.revenueImpact?.totalRevenuePerMinCents ?? summary?.impact?.revenuePerMinCents ?? 0;
-  const totalImpact = incident?.revenueImpact?.totalAccumulatedImpactCents ?? summary?.impact?.totalAccumulatedImpactCents ?? 0;
+  const totalImpact = summary?.impact?.totalAccumulatedImpactCents ?? 0;
   const startedAt = incident?.incident?.startedAt ?? summary?.incident?.startedAt;
 
   const duration = (() => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import {
@@ -101,6 +101,12 @@ export function IncidentHeader({
   const { data } = useIncident(incidentId);
   const ratePerMin = resolved ? 0 : (data?.revenueImpact?.totalRevenuePerMinCents ?? 0);
   const shortId = incidentId.slice(0, 8);
+  const totalImpactCents = useMemo(() => {
+  if (!startedAt || ratePerMin <= 0) return 0;
+  const end = resolvedAt ? new Date(resolvedAt).getTime() : Date.now();
+  const minutes = (end - new Date(startedAt).getTime()) / 60000;
+  return Math.max(0, Math.round(ratePerMin * minutes));
+}, [startedAt, ratePerMin, resolvedAt]);
 
   return (
     <motion.header
@@ -160,7 +166,7 @@ export function IncidentHeader({
           value={
             resolved ? (
               <span className="text-emerald-400">
-                {formatMoney(data?.revenueImpact?.totalAccumulatedImpactCents ?? 0)}
+                {formatMoney(totalImpactCents)}
               </span>
             ) : startedAt && ratePerMin > 0 ? (
               <RevenueTicker

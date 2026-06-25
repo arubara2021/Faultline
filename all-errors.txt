@@ -1,0 +1,90 @@
+﻿src/app/api/summary/route.ts(148,7): error TS2322: Type '{ serviceName: string; depth: number; classification: string; ownerTeam: string; dependencyType: string | null; isCustomerFacing: boolean; revenuePerMinCents: number; }[]' is not assignable to type '{ serviceName: string; depth: number; classification: string; ownerTeam: string; dependencyType: string; isCustomerFacing: boolean; revenuePerMinCents: number; }[]'.
+  Type '{ serviceName: string; depth: number; classification: string; ownerTeam: string; dependencyType: string | null; isCustomerFacing: boolean; revenuePerMinCents: number; }' is not assignable to type '{ serviceName: string; depth: number; classification: string; ownerTeam: string; dependencyType: string; isCustomerFacing: boolean; revenuePerMinCents: number; }'.
+    Types of property 'dependencyType' are incompatible.
+      Type 'string | null' is not assignable to type 'string'.
+        Type 'null' is not assignable to type 'string'.
+src/app/page.tsx(506,23): error TS2322: Type '{ hidden: { opacity: number; y: number; }; visible: { opacity: number; y: number; transition: { duration: number; ease: number[]; }; }; }' is not assignable to type 'Variants'.
+  Property 'visible' is incompatible with index signature.
+    Type '{ opacity: number; y: number; transition: { duration: number; ease: number[]; }; }' is not assignable to type 'Variant'.
+      Type '{ opacity: number; y: number; transition: { duration: number; ease: number[]; }; }' is not assignable to type 'TargetAndTransition'.
+        Type '{ opacity: number; y: number; transition: { duration: number; ease: number[]; }; }' is not assignable to type '{ transition?: Transition<any> | undefined; transitionEnd?: ResolvedValues$1 | undefined; }'.
+          Types of property 'transition' are incompatible.
+            Type '{ duration: number; ease: number[]; }' is not assignable to type 'Transition<any> | undefined'.
+              Type '{ duration: number; ease: number[]; }' is not assignable to type 'TransitionWithValueOverrides<any>'.
+                Type '{ duration: number; ease: number[]; }' is not assignable to type 'ValueAnimationTransition<any>'.
+                  Types of property 'ease' are incompatible.
+                    Type 'number[]' is not assignable to type 'Easing | Easing[] | undefined'.
+                      Type 'number[]' is not assignable to type 'EasingFunction | Easing[]'.
+                        Type 'number[]' is not assignable to type 'Easing[]'.
+                          Type 'number' is not assignable to type 'Easing'.
+src/app/page.tsx(530,13): error TS2322: Type '{ hidden: { opacity: number; y: number; }; visible: { opacity: number; y: number; transition: { duration: number; ease: number[]; }; }; }' is not assignable to type 'Variants'.
+  Property 'visible' is incompatible with index signature.
+    Type '{ opacity: number; y: number; transition: { duration: number; ease: number[]; }; }' is not assignable to type 'Variant'.
+      Type '{ opacity: number; y: number; transition: { duration: number; ease: number[]; }; }' is not assignable to type 'TargetAndTransition'.
+        Type '{ opacity: number; y: number; transition: { duration: number; ease: number[]; }; }' is not assignable to type '{ transition?: Transition<any> | undefined; transitionEnd?: ResolvedValues$1 | undefined; }'.
+          Types of property 'transition' are incompatible.
+            Type '{ duration: number; ease: number[]; }' is not assignable to type 'Transition<any> | undefined'.
+              Type '{ duration: number; ease: number[]; }' is not assignable to type 'TransitionWithValueOverrides<any>'.
+                Type '{ duration: number; ease: number[]; }' is not assignable to type 'ValueAnimationTransition<any>'.
+                  Types of property 'ease' are incompatible.
+                    Type 'number[]' is not assignable to type 'Easing | Easing[] | undefined'.
+                      Type 'number[]' is not assignable to type 'EasingFunction | Easing[]'.
+                        Type 'number[]' is not assignable to type 'Easing[]'.
+                          Type 'number' is not assignable to type 'Easing'.
+src/app/page.tsx(545,13): error TS2322: Type '{ hidden: { opacity: number; y: number; }; visible: { opacity: number; y: number; transition: { duration: number; ease: number[]; }; }; }' is not assignable to type 'Variants'.
+  Property 'visible' is incompatible with index signature.
+    Type '{ opacity: number; y: number; transition: { duration: number; ease: number[]; }; }' is not assignable to type 'Variant'.
+      Type '{ opacity: number; y: number; transition: { duration: number; ease: number[]; }; }' is not assignable to type 'TargetAndTransition'.
+        Type '{ opacity: number; y: number; transition: { duration: number; ease: number[]; }; }' is not assignable to type '{ transition?: Transition<any> | undefined; transitionEnd?: ResolvedValues$1 | undefined; }'.
+          Types of property 'transition' are incompatible.
+            Type '{ duration: number; ease: number[]; }' is not assignable to type 'Transition<any> | undefined'.
+              Type '{ duration: number; ease: number[]; }' is not assignable to type 'TransitionWithValueOverrides<any>'.
+                Type '{ duration: number; ease: number[]; }' is not assignable to type 'ValueAnimationTransition<any>'.
+                  Types of property 'ease' are incompatible.
+                    Type 'number[]' is not assignable to type 'Easing | Easing[] | undefined'.
+                      Type 'number[]' is not assignable to type 'EasingFunction | Easing[]'.
+                        Type 'number[]' is not assignable to type 'Easing[]'.
+                          Type 'number' is not assignable to type 'Easing'.
+src/app/page.tsx(553,13): error TS2322: Type '{ hidden: { opacity: number; y: number; }; visible: { opacity: number; y: number; transition: { duration: number; ease: number[]; }; }; }' is not assignable to type 'Variants'.
+  Property 'visible' is incompatible with index signature.
+    Type '{ opacity: number; y: number; transition: { duration: number; ease: number[]; }; }' is not assignable to type 'Variant'.
+      Type '{ opacity: number; y: number; transition: { duration: number; ease: number[]; }; }' is not assignable to type 'TargetAndTransition'.
+        Type '{ opacity: number; y: number; transition: { duration: number; ease: number[]; }; }' is not assignable to type '{ transition?: Transition<any> | undefined; transitionEnd?: ResolvedValues$1 | undefined; }'.
+          Types of property 'transition' are incompatible.
+            Type '{ duration: number; ease: number[]; }' is not assignable to type 'Transition<any> | undefined'.
+              Type '{ duration: number; ease: number[]; }' is not assignable to type 'TransitionWithValueOverrides<any>'.
+                Type '{ duration: number; ease: number[]; }' is not assignable to type 'ValueAnimationTransition<any>'.
+                  Types of property 'ease' are incompatible.
+                    Type 'number[]' is not assignable to type 'Easing | Easing[] | undefined'.
+                      Type 'number[]' is not assignable to type 'EasingFunction | Easing[]'.
+                        Type 'number[]' is not assignable to type 'Easing[]'.
+                          Type 'number' is not assignable to type 'Easing'.
+src/components/dashboard/ai-hero-banner.tsx(63,48): error TS2339: Property 'totalAccumulatedImpactCents' does not exist on type '{ totalRevenuePerMinCents: number; }'.
+src/components/dashboard/incident-summary.tsx(137,12): error TS2304: Cannot find name 'FileText'.
+src/components/dashboard/incident-summary.tsx(156,31): error TS2339: Property 'fullSummary' does not exist on type '{ headline: string; whatHappened: string; rootCauseAnalysis: string; blastRadiusSummary: string; revenueImpactSummary: string; fixPriority: string; }'.
+src/components/dashboard/revenue-timeline.tsx(96,15): error TS2322: Type '(value: number) => [string, string]' is not assignable to type 'Formatter<ValueType, NameType> & ((value: ValueType, name: NameType, item: TooltipPayloadEntry, index: number, payload: TooltipPayload) => ReactNode | [...])'.
+  Type '(value: number) => [string, string]' is not assignable to type 'Formatter<ValueType, NameType>'.
+    Types of parameters 'value' and 'value' are incompatible.
+      Type 'ValueType | undefined' is not assignable to type 'number'.
+        Type 'undefined' is not assignable to type 'number'.
+src/components/graph/graph-canvas.tsx(277,11): error TS2322: Type '({ id: string; source: LayoutNode; target: LayoutNode; dependencyType: string; active: false; } | null)[]' is not assignable to type 'LayoutEdge[]'.
+  Type '{ id: string; source: LayoutNode; target: LayoutNode; dependencyType: string; active: false; } | null' is not assignable to type 'LayoutEdge'.
+    Type 'null' is not assignable to type 'LayoutEdge'.
+src/components/graph/graph-canvas.tsx(290,25): error TS2677: A type predicate's type must be assignable to its parameter's type.
+  Type 'LayoutEdge' is not assignable to type '{ id: string; source: LayoutNode; target: LayoutNode; dependencyType: string; active: false; }'.
+    Types of property 'active' are incompatible.
+      Type 'boolean' is not assignable to type 'false'.
+src/components/incident/incident-header.tsx(163,51): error TS2339: Property 'totalAccumulatedImpactCents' does not exist on type '{ totalRevenuePerMinCents: number; }'.
+src/components/incident/revenue-impact-section.tsx(180,17): error TS2322: Type '(value: number) => [string, string]' is not assignable to type 'Formatter<ValueType, NameType> & ((value: ValueType, name: NameType, item: TooltipPayloadEntry, index: number, payload: TooltipPayload) => ReactNode | [...])'.
+  Type '(value: number) => [string, string]' is not assignable to type 'Formatter<ValueType, NameType>'.
+    Types of parameters 'value' and 'value' are incompatible.
+      Type 'ValueType | undefined' is not assignable to type 'number'.
+        Type 'undefined' is not assignable to type 'number'.
+src/components/layout/sidebar.tsx(283,47): error TS18048: 'detail' is possibly 'undefined'.
+src/components/layout/sidebar.tsx(346,17): error TS2322: Type 'unknown' is not assignable to type 'ReactNode'.
+src/components/layout/sidebar.tsx(349,17): error TS2322: Type 'unknown' is not assignable to type 'ReactNode'.
+src/components/layout/sidebar.tsx(352,17): error TS2322: Type 'unknown' is not assignable to type 'ReactNode'.
+src/components/layout/sidebar.tsx(355,17): error TS2322: Type 'unknown' is not assignable to type 'ReactNode'.
+src/lib/graph/ingest.ts(163,55): error TS2352: Conversion of type 'PgTransaction<NodePgQueryResultHKT, typeof import("C:/Users/arun0/Videos/Faultline/src/lib/db/schema"), ExtractTablesWithRelations<typeof import("C:/Users/arun0/Videos/Faultline/src/lib/db/schema")>>' to type 'NodePgDatabase<typeof import("C:/Users/arun0/Videos/Faultline/src/lib/db/schema")> & { $client: Pool; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
+  Property '$client' is missing in type 'PgTransaction<NodePgQueryResultHKT, typeof import("C:/Users/arun0/Videos/Faultline/src/lib/db/schema"), ExtractTablesWithRelations<typeof import("C:/Users/arun0/Videos/Faultline/src/lib/db/schema")>>' but required in type '{ $client: Pool; }'.
+src/lib/graph/stale.ts(92,5): error TS2739: Type 'SnapshotResult[]' is missing the following properties from type '{ refreshed: number; services: { name: string; revenuePerMinCents: number; recalculated: boolean; }[]; }': refreshed, services

@@ -1,0 +1,1107 @@
+===== FILE: src/components/incident/incident-header.tsx =====
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { motion } from "framer-motion";
+import {
+  ArrowLeft, Activity, Clock, DollarSign, Flame,
+  Loader2, Network, ShieldCheck
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+import { useIncident } from "@/lib/hooks/use-incident";
+import { IncidentTimer } from "@/components/dashboard/incident-timer";
+import { RevenueTicker } from "@/components/dashboard/revenue-ticker";
+
+interface IncidentHeaderProps {
+  incidentId: string;
+  rootServiceName?: string;
+  failureType?: string;
+  severity?: string;
+  startedAt?: string;
+  resolvedAt?: string | null;
+  affectedCount?: number;
+  maxDepth?: number;
+  resolved: boolean;
+  isResolving: boolean;
+  onResolve: () => void;
+}
+
+function formatMoney(cents: number): string {
+  return `$${(cents / 100).toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  })}`;
+}
+
+function StatusPulse({ resolved }: { resolved: boolean }) {
+  if (resolved) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-emerald-400" style={{ fontFamily: "var(--font-mono)" }}>
+        <span className="size-1.5 rounded-full bg-emerald-500" />
+        Resolved
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-red-400" style={{ fontFamily: "var(--font-mono)" }}>
+      <span className="relative flex size-1.5">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-red-400 opacity-75" />
+        <span className="relative inline-flex size-1.5 rounded-full bg-red-500" />
+      </span>
+      Active
+    </span>
+  );
+}
+
+function MetricChip({
+  icon: Icon,
+  label,
+  value,
+  accent,
+  iconColor,
+}: {
+  icon: React.ElementType;
+  label: string;
+  value: React.ReactNode;
+  accent?: boolean;
+  iconColor?: string;
+}) {
+  return (
+    <div className="flex items-center gap-2.5 rounded-lg border border-[var(--fl-border-subtle)] bg-[var(--fl-surface)] px-3 py-2">
+      <Icon className="size-3.5 shrink-0" style={{ color: iconColor ?? "var(--fl-text-tertiary)" }} />
+      <div className="flex min-w-0 flex-col">
+        <span className="text-[10px] font-medium uppercase tracking-wider text-[var(--fl-text-tertiary)]" style={{ fontFamily: "var(--font-mono)" }}>
+          {label}
+        </span>
+        <span className={cn(
+          "font-metric text-[15px] font-bold leading-tight",
+          accent ? "text-[var(--fl-accent-revenue)]" : "text-[var(--fl-text-primary)]"
+        )}>
+          {value}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+export function IncidentHeader({
+  incidentId,
+  rootServiceName,
+  failureType,
+  severity,
+  startedAt,
+  resolvedAt,
+  affectedCount,
+  maxDepth,
+  resolved,
+  isResolving,
+  onResolve,
+}: IncidentHeaderProps) {
+  const { data } = useIncident(incidentId);
+  const ratePerMin = resolved ? 0 : (data?.revenueImpact?.totalRevenuePerMinCents ?? 0);
+  const shortId = incidentId.slice(0, 8);
+
+  return (
+    <motion.header
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+      className="flex flex-col gap-4"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Link
+          href="/"
+          className="flex items-center gap-1.5 text-[12px] text-[var(--fl-text-tertiary)] transition-colors hover:text-[var(--fl-text-secondary)]"
+        >
+          <ArrowLeft className="size-3.5" />
+          Back to dashboard
+        </Link>
+
+        {!resolved && (
+          <button
+            type="button"
+            onClick={onResolve}
+            disabled={isResolving}
+            className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-[13px] font-semibold text-white transition-all duration-200 hover:bg-emerald-600/90 hover:shadow-[0_0_16px_rgba(16,185,129,0.2)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isResolving ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <ShieldCheck className="size-4" />
+            )}
+            Resolve incident
+          </button>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <StatusPulse resolved={resolved} />
+          <span className="text-[11px] text-[var(--fl-text-tertiary)]" style={{ fontFamily: "var(--font-mono)" }}>
+            {shortId}
+          </span>
+        </div>
+
+        <h1 className="text-[22px] font-bold tracking-tight text-[var(--fl-text-primary)] sm:text-[26px]">
+          {rootServiceName ?? "Unknown"}{" "}
+          <span className="font-normal text-[var(--fl-text-tertiary)]">
+            — {(failureType ?? "unknown").replace(/_/g, " ")}
+          </span>
+        </h1>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+        <MetricChip
+          icon={DollarSign}
+          label="Revenue at risk"
+          accent={ratePerMin > 0 && !resolved}
+          iconColor="#F43F5E"
+          value={
+            resolved ? (
+              <span className="text-emerald-400">
+                {formatMoney(data?.revenueImpact?.totalAccumulatedImpactCents ?? 0)}
+              </span>
+            ) : startedAt && ratePerMin > 0 ? (
+              <RevenueTicker
+                ratePerMinCents={ratePerMin}
+                startedAt={startedAt}
+                resolvedAt={resolvedAt}
+                className="font-metric text-[15px] font-bold text-[var(--fl-accent-revenue)]"
+              />
+            ) : (
+              <span className="text-[var(--fl-text-tertiary)]">—</span>
+            )
+          }
+        />
+        <MetricChip
+          icon={Flame}
+          label="Burn rate"
+          iconColor="#EF4444"
+          value={
+            resolved ? (
+              <span className="text-emerald-400">0<span className="ml-0.5 text-[10px] font-normal text-[var(--fl-text-tertiary)]">/min</span></span>
+            ) : ratePerMin > 0 ? (
+              <span>
+                {formatMoney(ratePerMin)}
+                <span className="ml-0.5 text-[10px] font-normal text-[var(--fl-text-tertiary)]">/min</span>
+              </span>
+            ) : (
+              <span className="text-[var(--fl-text-tertiary)]">—</span>
+            )
+          }
+        />
+        <MetricChip
+          icon={Clock}
+          label="Duration"
+          iconColor="#F59E0B"
+          value={
+            startedAt ? (
+              <IncidentTimer
+                startedAt={startedAt}
+                resolvedAt={resolvedAt}
+                className="font-metric text-[15px] font-bold text-[var(--fl-text-primary)]"
+              />
+            ) : (
+              <span className="text-[var(--fl-text-tertiary)]">—</span>
+            )
+          }
+        />
+        <MetricChip
+          icon={Network}
+          label="Impacted"
+          iconColor="#6366F1"
+          value={
+            <span>
+              {affectedCount ?? 0}
+              <span className="ml-1 text-[10px] font-normal text-[var(--fl-text-tertiary)]">
+                · d{maxDepth ?? 0}
+              </span>
+            </span>
+          }
+        />
+      </div>
+    </motion.header>
+  );
+}
+
+===== FILE: src/components/incident/revenue-impact-section.tsx =====
+"use client";
+
+import { useMemo } from "react";
+import { motion } from "framer-motion";
+import {
+  Area,
+  AreaChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { DollarSign, TrendingUp, Clock } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { useIncident } from "@/lib/hooks/use-incident";
+import { IncidentTimer } from "@/components/dashboard/incident-timer";
+import { RevenueTicker } from "@/components/dashboard/revenue-ticker";
+
+interface RevenueImpactSectionProps {
+  incidentId: string;
+  resolved?: boolean;
+}
+
+function formatMoney(cents: number): string {
+  const dollars = cents / 100;
+  if (dollars >= 1000000) return "$" + (dollars / 1000000).toFixed(1) + "M";
+  if (dollars >= 1000) return "$" + (dollars / 1000).toFixed(1) + "K";
+  return "$" + Math.round(dollars).toLocaleString();
+}
+
+function buildSeries(ratePerMinCents: number, startedAt: string, resolvedAt?: string | null) {
+  const startMs = new Date(startedAt).getTime();
+  const endMs = resolvedAt ? new Date(resolvedAt).getTime() : Date.now();
+  const elapsedMin = Math.max(1, (endMs - startMs) / 60000);
+  const rate = ratePerMinCents / 100;
+  const steps = 30;
+  const points: Array<{ minute: number; cumulative: number }> = [];
+  for (let i = 0; i <= steps; i++) {
+    const minute = (elapsedMin * i) / steps;
+    points.push({
+      minute: Math.round(minute * 10) / 10,
+      cumulative: Math.round(rate * minute * 100) / 100,
+    });
+  }
+  return points;
+}
+
+export function RevenueImpactSection({ incidentId, resolved }: RevenueImpactSectionProps) {
+  const { data } = useIncident(incidentId);
+
+  const ratePerMin = data?.revenueImpact?.totalRevenuePerMinCents ?? 0;
+  const startedAt = data?.incident?.startedAt ?? "";
+  const resolvedAt = data?.incident?.resolvedAt ?? null;
+  const isResolved = resolved ?? Boolean(resolvedAt);
+
+  const totalImpact = useMemo(() => {
+    if (!startedAt || ratePerMin <= 0) return 0;
+    const end = resolvedAt ? new Date(resolvedAt).getTime() : Date.now();
+    const minutes = (end - new Date(startedAt).getTime()) / 60000;
+    return Math.max(0, Math.round(ratePerMin * minutes));
+  }, [ratePerMin, startedAt, resolvedAt]);
+
+  const series = useMemo(
+    () => buildSeries(ratePerMin, startedAt, resolvedAt),
+    [ratePerMin, startedAt, resolvedAt]
+  );
+
+  const serviceBreakdown = useMemo(() => {
+    if (!data?.blastRadius) return [];
+    return data.blastRadius
+      .filter((s) => s.revenuePerMinCents > 0)
+      .sort((a, b) => b.revenuePerMinCents - a.revenuePerMinCents)
+      .slice(0, 6);
+  }, [data?.blastRadius]);
+
+  const maxRevenue = serviceBreakdown.length > 0
+    ? serviceBreakdown[0].revenuePerMinCents
+    : 0;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.45, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
+    >
+      <div className="overflow-hidden rounded-xl border border-[var(--fl-border-subtle)] bg-[var(--fl-surface)]">
+        <div className="border-b border-[var(--fl-border-subtle)] px-3 py-2.5 sm:px-4 sm:py-3">
+          <div className="flex items-center gap-2">
+            <DollarSign className="size-3.5 text-[var(--fl-accent-revenue)]" />
+            <span className="text-[10px] font-semibold tracking-[0.12em] uppercase text-[var(--fl-accent-revenue)]" style={{ fontFamily: "var(--font-mono)" }}>
+              Revenue impact
+            </span>
+            {isResolved && (
+              <span className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/[0.06] px-2.5 py-0.5 text-[10px] font-semibold text-emerald-400">
+                <span className="size-1.5 rounded-full bg-emerald-500" />
+                Final
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-px border-b border-[var(--fl-border-subtle)] bg-[var(--fl-border-subtle)]">
+          <div className="flex flex-col gap-0.5 bg-[var(--fl-surface)] px-2.5 py-2.5 sm:gap-1 sm:px-4 sm:py-3">
+            <span className="text-[9px] font-medium uppercase tracking-wider text-[var(--fl-text-tertiary)] sm:text-[10px]" style={{ fontFamily: "var(--font-mono)" }}>
+              Burn rate
+            </span>
+            <span className={cn(
+              "font-metric text-[16px] font-bold leading-none sm:text-[20px]",
+              isResolved ? "text-emerald-400" : "text-[var(--fl-accent-revenue)]"
+            )}>
+              {isResolved ? "$0" : formatMoney(ratePerMin)}
+              <span className="ml-0.5 text-[9px] font-normal text-[var(--fl-text-tertiary)] sm:text-[11px]">/min</span>
+            </span>
+          </div>
+          <div className="flex flex-col gap-0.5 bg-[var(--fl-surface)] px-2.5 py-2.5 sm:gap-1 sm:px-4 sm:py-3">
+            <span className="text-[9px] font-medium uppercase tracking-wider text-[var(--fl-text-tertiary)] sm:text-[10px]" style={{ fontFamily: "var(--font-mono)" }}>
+              Total impact
+            </span>
+            <span className="font-metric text-[16px] font-bold leading-none text-[var(--fl-accent-revenue)] sm:text-[20px]">
+              {formatMoney(totalImpact)}
+            </span>
+          </div>
+          <div className="flex flex-col gap-0.5 bg-[var(--fl-surface)] px-2.5 py-2.5 sm:gap-1 sm:px-4 sm:py-3">
+            <span className="text-[9px] font-medium uppercase tracking-wider text-[var(--fl-text-tertiary)] sm:text-[10px]" style={{ fontFamily: "var(--font-mono)" }}>
+              Duration
+            </span>
+            {startedAt ? (
+              <IncidentTimer
+                startedAt={startedAt}
+                resolvedAt={resolvedAt}
+                className="font-metric text-[16px] font-bold leading-none text-[var(--fl-text-primary)] sm:text-[20px]"
+              />
+            ) : (
+              <span className="font-metric text-[16px] font-bold leading-none text-[var(--fl-text-tertiary)] sm:text-[20px]">—</span>
+            )}
+          </div>
+        </div>
+
+        <div style={{ width: "100%", height: 150, minWidth: 200, minHeight: 100 }} className="px-1 pt-2 sm:px-2 sm:pt-3">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={series} margin={{ top: 6, right: 8, left: 0, bottom: 4 }}>
+              <defs>
+                <linearGradient id="fl-rev-grad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={isResolved ? "#10B981" : "#F43F5E"} stopOpacity={0.25} />
+                  <stop offset="100%" stopColor={isResolved ? "#10B981" : "#F43F5E"} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis
+                dataKey="minute"
+                tickFormatter={(v) => v + "m"}
+                stroke="#475569"
+                fontSize={9}
+                tickLine={false}
+                axisLine={false}
+                minTickGap={30}
+                tick={{ fontFamily: "var(--font-mono)" }}
+              />
+              <YAxis
+                tickFormatter={(v) => {
+                  if (v >= 1000) return "$" + (v / 1000).toFixed(1) + "k";
+                  return "$" + v;
+                }}
+                stroke="#475569"
+                fontSize={9}
+                tickLine={false}
+                axisLine={false}
+                width={42}
+                tick={{ fontFamily: "var(--font-mono)" }}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: "#111318",
+                  border: "1px solid #1E2128",
+                  borderRadius: "8px",
+                  fontSize: "11px",
+                  fontFamily: "var(--font-mono)",
+                  color: "#F1F5F9",
+                }}
+                labelStyle={{ color: "#94A3B8" }}
+                formatter={(value: number) => [
+                  "$" + value.toLocaleString("en-US"),
+                  "Cumulative",
+                ]}
+                labelFormatter={(label) => label + " min elapsed"}
+              />
+              <Area
+                type="monotone"
+                dataKey="cumulative"
+                stroke={isResolved ? "#10B981" : "#F43F5E"}
+                strokeWidth={2}
+                fill="url(#fl-rev-grad)"
+                isAnimationActive
+                animationDuration={600}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        {serviceBreakdown.length > 0 && (
+          <div className="border-t border-[var(--fl-border-subtle)] px-3 py-3 sm:px-4 sm:py-3.5">
+            <span className="mb-2.5 block text-[10px] font-semibold tracking-[0.12em] uppercase text-[var(--fl-text-tertiary)] sm:mb-3" style={{ fontFamily: "var(--font-mono)" }}>
+              Breakdown by service
+            </span>
+            <div className="space-y-2">
+              {serviceBreakdown.map((svc, i) => {
+                const pct = maxRevenue > 0
+                  ? (svc.revenuePerMinCents / maxRevenue) * 100
+                  : 0;
+                return (
+                  <motion.div
+                    key={svc.serviceId}
+                    initial={{ opacity: 0, x: -8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.3 + i * 0.06 }}
+                    className="space-y-1"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 truncate text-[11px] font-medium text-[var(--fl-text-secondary)]" style={{ fontFamily: "var(--font-mono)" }}>
+                        {svc.serviceName}
+                      </span>
+                      <span className="shrink-0 text-[11px] font-semibold text-[var(--fl-accent-revenue)]" style={{ fontFamily: "var(--font-mono)" }}>
+                        {formatMoney(svc.revenuePerMinCents)}/min
+                      </span>
+                    </div>
+                    <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--fl-surface-raised)]">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: pct + "%" }}
+                        transition={{ duration: 0.6, delay: 0.4 + i * 0.06, ease: [0.16, 1, 0.3, 1] }}
+                        className="absolute inset-y-0 left-0 rounded-full"
+                        style={{
+                          background: isResolved
+                            ? "linear-gradient(90deg, #10B981, #059669)"
+                            : "linear-gradient(90deg, #F43F5E, #BE123C)",
+                        }}
+                      />
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+            {!isResolved && (
+              <p className="mt-2.5 text-[11px] text-[var(--fl-text-tertiary)] sm:mt-3">
+                Resolving this incident will restore{" "}
+                <span className="font-semibold text-[var(--fl-accent-revenue)]" style={{ fontFamily: "var(--font-mono)" }}>
+                  ~{formatMoney(ratePerMin)}/min
+                </span>{" "}
+                in revenue capacity.
+              </p>
+            )}
+            {isResolved && (
+              <p className="mt-2.5 text-[11px] text-emerald-400 sm:mt-3">
+                Revenue capacity restored. All affected services recovered.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+===== FILE: src/components/layout/sidebar.tsx =====
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Activity, AlertTriangle, ChevronDown, ChevronRight,
+  DollarSign, ExternalLink, FileText, Flame, Loader2,
+  Server, ShieldCheck, Target, Zap, Copy, Check
+} from "lucide-react";
+import Link from "next/link";
+import { toast } from "sonner";
+import { cn } from "@/lib/utils";
+import { useIncidents } from "@/lib/hooks/use-incident";
+import { useIncident } from "@/lib/hooks/use-incident";
+import { useResolve } from "@/lib/hooks/use-resolve";
+import { useIncidentSummary } from "@/lib/hooks/use-summary";
+import { mutate } from "swr";
+import {
+  getHealthStatusColor,
+  getClassificationColor,
+  getDepthColor,
+} from "@/lib/utils/colors";
+
+function formatDuration(startedAt: string): string {
+  const diff = Math.max(0, Date.now() - new Date(startedAt).getTime());
+  const m = Math.floor(diff / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function formatMoney(cents: number): string {
+  const dollars = cents / 100;
+  if (dollars >= 1000000) return `$${(dollars / 1000000).toFixed(1)}M`;
+  if (dollars >= 1000) return `$${(dollars / 1000).toFixed(1)}k`;
+  return `$${Math.round(dollars).toLocaleString()}`;
+}
+
+function formatDollars(dollars: number): string {
+  if (dollars >= 1000000) return `$${(dollars / 1000000).toFixed(1)}M`;
+  if (dollars >= 1000) return `$${(dollars / 1000).toFixed(1)}k`;
+  return `$${Math.round(dollars).toLocaleString()}`;
+}
+
+function formatFailureType(type?: string): string {
+  if (!type) return "unknown";
+  return type.replace(/_/g, " ");
+}
+
+function AnimatedNumber({
+  value,
+  prefix = "$",
+  suffix = "",
+}: {
+  value: number;
+  prefix?: string;
+  suffix?: string;
+}) {
+  const [display, setDisplay] = useState(value);
+
+  useEffect(() => {
+    const start = display;
+    const diff = value - start;
+    if (Math.abs(diff) < 1) {
+      setDisplay(value);
+      return;
+    }
+    let frame: number;
+    const duration = 500;
+    const startTime = performance.now();
+    function tick(now: number) {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setDisplay(start + diff * eased);
+      if (progress < 1) frame = requestAnimationFrame(tick);
+    }
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [value]);
+
+  return (
+    <span className="text-glow-revenue font-metric text-[28px] font-bold leading-none text-[var(--fl-accent-revenue)]">
+      {prefix}
+      {Math.round(display).toLocaleString()}
+      {suffix}
+    </span>
+  );
+}
+
+function SectionHeader({
+  icon: Icon,
+  label,
+  color,
+  collapsible,
+  open,
+  onToggle,
+}: {
+  icon: React.ElementType;
+  label: string;
+  color: string;
+  collapsible?: boolean;
+  open?: boolean;
+  onToggle?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      disabled={!collapsible}
+      className={cn(
+        "flex w-full items-center gap-2",
+        collapsible && "cursor-pointer"
+      )}
+    >
+      <Icon className="size-3.5" style={{ color }} />
+      <span
+        className="text-[10px] font-semibold tracking-[0.12em] uppercase"
+        style={{ color, fontFamily: "var(--font-mono)" }}
+      >
+        {label}
+      </span>
+      {collapsible && (
+        <ChevronDown
+          className="ml-auto size-3 text-[var(--fl-text-tertiary)] transition-transform duration-200"
+          style={{ transform: open ? "rotate(0deg)" : "rotate(-90deg)" }}
+        />
+      )}
+    </button>
+  );
+}
+
+function SeverityBadge({ severity }: { severity: string }) {
+  const isCritical = severity === "down" || severity === "critical";
+  return (
+    <div
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-lg px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
+        isCritical
+          ? "border border-red-500/30 bg-red-500/15 text-red-400"
+          : "border border-amber-500/30 bg-amber-500/15 text-amber-400"
+      )}
+      style={{ fontFamily: "var(--font-mono)" }}
+    >
+      {isCritical ? <Flame className="size-2.5" /> : <AlertTriangle className="size-2.5" />}
+      {isCritical ? "critical" : "warning"}
+    </div>
+  );
+}
+
+function CollapsibleSection({
+  icon,
+  label,
+  color,
+  children,
+  defaultOpen = true,
+}: {
+  icon: React.ElementType;
+  label: string;
+  color: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border-b border-white/[0.04] px-4 py-3.5">
+      <SectionHeader
+        icon={icon}
+        label={label}
+        color={color}
+        collapsible
+        open={open}
+        onToggle={() => setOpen((v) => !v)}
+      />
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="pt-3">{children}</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function SignalDetail({ label, value, breached }: { label: string; value: string; breached?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-[11px] text-[var(--fl-text-tertiary)]">{label}</span>
+      <span
+        className={cn(
+          "text-[11px] font-medium",
+          breached ? "text-[var(--fl-accent-revenue)]" : "text-[var(--fl-text-secondary)]"
+        )}
+        style={{ fontFamily: "var(--font-mono)" }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function HealthySidebar() {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="border-b border-white/[0.04] px-4 py-3">
+        <span className="text-[13px] font-semibold text-[var(--fl-text-primary)]">System Status</span>
+      </div>
+      <div className="flex flex-1 flex-col items-center justify-center gap-5 px-6 text-center">
+        <div className="relative">
+          <div className="flex size-14 items-center justify-center rounded-2xl border border-emerald-500/15 bg-emerald-500/[0.06]">
+            <ShieldCheck className="size-6 text-emerald-500" />
+          </div>
+          <div className="absolute -inset-3 -z-10 rounded-3xl bg-emerald-500/[0.04] blur-xl animate-fl-breathe" />
+        </div>
+        <div className="space-y-1.5">
+          <p className="text-[14px] font-semibold text-[var(--fl-text-primary)]">All systems nominal</p>
+          <p className="text-[12px] leading-relaxed text-[var(--fl-text-tertiary)]">
+            No active incidents detected. Faultline is monitoring all services continuously.
+          </p>
+        </div>
+      </div>
+      <div className="border-t border-white/[0.04] px-4 py-3">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="text-[var(--fl-text-tertiary)]">Last check</span>
+          <span className="text-[var(--fl-text-secondary)]" style={{ fontFamily: "var(--font-mono)" }}>just now</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IncidentSidebarContent({ incidentId }: { incidentId: string }) {
+  const { data: incidents } = useIncidents();
+  const { data: detail } = useIncident(incidentId);
+  const { data: summary } = useIncidentSummary(incidentId);
+  const { trigger: resolveIncident, isMutating: isResolving } = useResolve();
+  const active = incidents?.active;
+
+  const [duration, setDuration] = useState("00:00");
+  const [copied, setCopied] = useState(false);
+  const [accumulatedDollars, setAccumulatedDollars] = useState(0);
+
+  const startedAt = active?.startedAt;
+  const revenuePerMinCents = detail?.revenueImpact?.totalRevenuePerMinCents ?? 0;
+  const revenuePerMinDollars = revenuePerMinCents / 100;
+
+  useEffect(() => {
+    if (!startedAt) return;
+    setDuration(formatDuration(startedAt));
+    const timer = setInterval(
+      () => setDuration(formatDuration(startedAt)),
+      1000
+    );
+    return () => clearInterval(timer);
+  }, [startedAt]);
+
+  useEffect(() => {
+    if (!startedAt || revenuePerMinDollars <= 0) {
+      setAccumulatedDollars(0);
+      return;
+    }
+
+    const tick = () => {
+      const elapsed = (Date.now() - new Date(startedAt).getTime()) / 60000;
+      setAccumulatedDollars(Math.max(0, revenuePerMinDollars * elapsed));
+    };
+
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [startedAt, revenuePerMinDollars]);
+
+  const affectedCount = active?.affectedServiceCount ?? 0;
+  const maxDepth = active?.maxDepth ?? 0;
+  const signalDetails = detail?.rootCause?.signalDetails;
+
+  const blastByDepth = new Map<number, typeof detail.blastRadius>();
+  if (detail?.blastRadius) {
+    for (const entry of detail.blastRadius) {
+      const list = blastByDepth.get(entry.depth) ?? [];
+      list.push(entry);
+      blastByDepth.set(entry.depth, list);
+    }
+  }
+  const sortedDepths = [...blastByDepth.keys()].sort((a, b) => a - b);
+
+  const headline = summary?.ai?.headline ?? "";
+
+  const handleCopy = useCallback(async () => {
+    if (!headline) return;
+    await navigator.clipboard.writeText(headline);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [headline]);
+
+  const handleResolve = useCallback(async () => {
+    try {
+      const result = await resolveIncident({ incidentId });
+      toast.success("Incident resolved", {
+        description: `${result.durationFormatted} · $${(result.totalRevenueImpactCents / 100).toLocaleString()} total impact`,
+      });
+      await Promise.all([
+        mutate("/api/incidents"),
+        mutate("/api/services"),
+        mutate("/api/graph"),
+      ]);
+    } catch (err) {
+      toast.error("Failed to resolve", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  }, [incidentId, resolveIncident]);
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="border-b border-red-500/15 bg-red-500/[0.03] px-4 py-3">
+        <div className="flex items-center justify-between">
+          <SeverityBadge severity={active?.severity ?? "down"} />
+          <div className="flex items-center gap-1.5 text-[11px] text-[var(--fl-text-tertiary)]" style={{ fontFamily: "var(--font-mono)" }}>
+            <span className="inline-block size-1.5 animate-pulse rounded-full bg-red-500" />
+            {duration}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto scrollbar-thin">
+        <div className="border-b border-white/[0.04] px-4 py-4">
+          <SectionHeader icon={Target} label="Root cause" color="#EF4444" />
+          <div className="mt-3 rounded-xl border border-red-500/10 bg-red-500/[0.04] shadow-[0_2px_8px_rgba(239,68,68,0.06)]">
+            <div className="px-3.5 py-3">
+              <p className="text-[14px] font-semibold text-[var(--fl-text-primary)]" style={{ fontFamily: "var(--font-mono)" }}>
+                {active?.rootServiceName ?? "unknown"}
+              </p>
+              <p className="mt-0.5 text-[12px] text-[var(--fl-text-secondary)]">
+                {formatFailureType(active?.failureType)}
+              </p>
+            </div>
+            {signalDetails && typeof signalDetails === "object" && (
+              <div className="space-y-1.5 border-t border-red-500/10 px-3.5 py-3">
+                {signalDetails.connection_pool && (
+                  <SignalDetail label="Connection pool" value={String(signalDetails.connection_pool)} breached />
+                )}
+                {signalDetails.multiplier && (
+                  <SignalDetail label="Latency multiplier" value={`{signalDetails.multiplier}x`} breached />
+                )}
+                {signalDetails.error_rate && (
+                  <SignalDetail label="Error rate" value={String(signalDetails.error_rate)} breached />
+                )}
+                {signalDetails.threshold && (
+                  <SignalDetail label="Threshold" value={String(signalDetails.threshold)} />
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <CollapsibleSection icon={DollarSign} label="Revenue at risk" color="#F43F5E">
+          <div className="space-y-2">
+            <AnimatedNumber value={revenuePerMinDollars} suffix="/min" />
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-[var(--fl-text-tertiary)]">Accumulated</span>
+              <span className="text-[var(--fl-text-secondary)]" style={{ fontFamily: "var(--font-mono)" }}>
+                {formatDollars(accumulatedDollars)}
+              </span>
+            </div>
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection icon={Zap} label="Blast radius" color="#F59E0B">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-[var(--fl-text-secondary)]">Affected</span>
+              <span className="font-metric text-[14px] font-bold text-[var(--fl-text-primary)]">{affectedCount}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[12px] text-[var(--fl-text-secondary)]">Max depth</span>
+              <span className="font-metric text-[14px] font-bold text-[var(--fl-text-primary)]">{maxDepth}</span>
+            </div>
+
+            {sortedDepths.map((depth) => {
+              const entries = blastByDepth.get(depth) ?? [];
+              const dc = getDepthColor(depth);
+              return (
+                <div key={depth} className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className={cn("inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold", dc.bg, dc.text)} style={{ fontFamily: "var(--font-mono)" }}>
+                      D{depth}
+                    </span>
+                    <span className="text-[10px] text-[var(--fl-text-tertiary)]">{entries.length} services</span>
+                  </div>
+                  <div className="space-y-1">
+                    {entries.map((entry) => {
+                      const cls = getClassificationColor(entry.classification);
+                      return (
+                        <div
+                          key={entry.serviceId}
+                          className="flex items-center justify-between rounded-lg border border-white/[0.04] bg-[var(--fl-surface-raised)] px-2.5 py-1.5"
+                        >
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className="size-1.5 rounded-full" style={{ backgroundColor: dc.fill }} />
+                            <span className="truncate text-[11px] font-medium text-[var(--fl-text-primary)]" style={{ fontFamily: "var(--font-mono)" }}>
+                              {entry.serviceName}
+                            </span>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            {entry.isCustomerFacing && (
+                              <span className="rounded-md bg-blue-500/10 px-1 py-0.5 text-[9px] font-semibold text-blue-400 uppercase">CF</span>
+                            )}
+                            {entry.revenuePerMinCents > 0 && (
+                              <span className="text-[10px] text-[var(--fl-accent-revenue)]" style={{ fontFamily: "var(--font-mono)" }}>
+                                {formatMoney(entry.revenuePerMinCents)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </CollapsibleSection>
+
+        {headline && (
+          <div className="border-b border-white/[0.04] px-4 py-3.5">
+            <SectionHeader icon={FileText} label="AI Summary" color="#6366F1" />
+            <div className="mt-3 flex items-start gap-2">
+              <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-[var(--fl-text-secondary)]">
+                {headline}
+              </p>
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="shrink-0 rounded-lg p-1.5 text-[var(--fl-text-tertiary)] transition-colors hover:bg-[var(--fl-surface-raised)] hover:text-[var(--fl-text-secondary)]"
+              >
+                {copied ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="px-4 py-3.5">
+          <div className="space-y-2">
+            <Link
+              href={`/incidents/${incidentId}`}
+              className="group flex items-center justify-between rounded-xl border border-white/[0.04] bg-[var(--fl-surface-raised)] px-3.5 py-2.5 text-[12px] font-medium text-[var(--fl-text-secondary)] transition-all duration-200 hover:border-indigo-500/30 hover:bg-indigo-500/[0.06] hover:text-indigo-400 hover:shadow-[0_0_16px_rgba(99,102,241,0.08)]"
+            >
+              <div className="flex items-center gap-2.5">
+                <Server className="size-4 opacity-50 transition-opacity group-hover:opacity-80" />
+                View full details
+              </div>
+              <ChevronRight className="size-3.5 opacity-30 transition-all group-hover:translate-x-0.5 group-hover:opacity-60" />
+            </Link>
+
+            <button
+              type="button"
+              onClick={handleResolve}
+              disabled={isResolving}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-3.5 py-2.5 text-[12px] font-semibold text-white transition-all duration-200 hover:bg-emerald-600/90 hover:shadow-[0_0_16px_rgba(16,185,129,0.2)] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isResolving ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <ShieldCheck className="size-3.5" />
+              )}
+              Resolve incident
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface SidebarProps {
+  hasIncident: boolean;
+  incidentId?: string;
+}
+
+export function IncidentSidebar({ hasIncident, incidentId }: SidebarProps) {
+  return (
+    <aside className="hidden w-[340px] shrink-0 border-l border-white/[0.04] bg-[var(--fl-surface)] lg:block">
+      <AnimatePresence mode="wait">
+        {hasIncident && incidentId ? (
+          <motion.div
+            key="incident"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+            className="h-full"
+          >
+            <IncidentSidebarContent incidentId={incidentId} />
+          </motion.div>
+        ) : (
+          <motion.div
+            key="healthy"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+            className="h-full"
+          >
+            <HealthySidebar />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </aside>
+  );
+}
+
+===== FILE: src/lib/graph/stale.ts =====
+// ═══════════════════════════════════════════
+// 6. src/lib/graph/stale.ts
+// ═══════════════════════════════════════════
+
+import { db } from "../db";
+import { dependencies } from "../db/schema";
+import { lt, inArray } from "drizzle-orm";
+import { config } from "../config";
+import { recalculateConfidenceScores } from "./confidence";
+import { refreshTrafficSnapshots } from "../impact/snapshot-refresh";
+
+const STALE_THRESHOLD_HOURS = 24;
+
+interface StaleEdge {
+  id: string;
+  sourceServiceId: string;
+  targetServiceId: string;
+  lastObservedAt: Date | null;
+}
+
+export async function flagStaleEdges(): Promise<StaleEdge[]> {
+  const staleThreshold = new Date(
+    Date.now() - STALE_THRESHOLD_HOURS * 60 * 60 * 1000
+  );
+
+  const staleDeps = await db
+    .select({
+      id: dependencies.id,
+      sourceServiceId: dependencies.sourceServiceId,
+      targetServiceId: dependencies.targetServiceId,
+      lastObservedAt: dependencies.lastObservedAt,
+    })
+    .from(dependencies)
+    .where(lt(dependencies.lastObservedAt, staleThreshold));
+
+  return staleDeps.map((dep) => ({
+    id: dep.id,
+    sourceServiceId: dep.sourceServiceId,
+    targetServiceId: dep.targetServiceId,
+    lastObservedAt: dep.lastObservedAt,
+  }));
+}
+
+export async function removePermanentlyStaleEdges(): Promise<number> {
+  const permanentThresholdHours = config.staleEdgeDays * 24;
+  const permanentThreshold = new Date(
+    Date.now() - permanentThresholdHours * 60 * 60 * 1000
+  );
+
+  const permanentlyStale = await db
+    .select({ id: dependencies.id })
+    .from(dependencies)
+    .where(lt(dependencies.lastObservedAt, permanentThreshold));
+
+  if (permanentlyStale.length === 0) {
+    return 0;
+  }
+
+  const staleIds = permanentlyStale.map((d) => d.id);
+  await db
+    .delete(dependencies)
+    .where(inArray(dependencies.id, staleIds));
+
+  return staleIds.length;
+}
+
+export async function runStaleCleanup(): Promise<{
+  staleEdges: { flagged: number; removed: number };
+  confidence: { updated: number };
+  snapshots: {
+    refreshed: number;
+    services: Array<{
+      name: string;
+      revenuePerMinCents: number;
+      recalculated: boolean;
+    }>;
+  };
+}> {
+  const stale = await flagStaleEdges();
+  const removed = await removePermanentlyStaleEdges();
+  const confidenceUpdated = await recalculateConfidenceScores();
+  const snapshots = await refreshTrafficSnapshots();
+
+  return {
+    staleEdges: {
+      flagged: stale.length,
+      removed,
+    },
+    confidence: {
+      updated: confidenceUpdated,
+    },
+    snapshots,
+  };
+}
+
+

@@ -274,20 +274,20 @@ export function GraphCanvas({ activeIncidentId }: GraphCanvasProps) {
     if (!graph) return null;
     const nodes = computeLayout(graph.nodes, graph.edges, CANVAS_W, CANVAS_H);
     const index = new Map(nodes.map((n) => [n.id, n]));
-    const edges: LayoutEdge[] = graph.edges
-      .map((e) => {
-        const source = index.get(e.sourceServiceId);
-        const target = index.get(e.targetServiceId);
-        if (!source || !target) return null;
-        return {
+    const edges = graph.edges.reduce<LayoutEdge[]>((acc, e) => {
+      const source = index.get(e.sourceServiceId);
+      const target = index.get(e.targetServiceId);
+      if (source && target) {
+        acc.push({
           id: e.id,
           source,
           target,
           dependencyType: e.dependencyType,
           active: false,
-        } satisfies LayoutEdge;
-      })
-      .filter((e): e is LayoutEdge => e !== null);
+        });
+      }
+      return acc;
+    }, []);
     return { nodes, edges, index };
   }, [graph]);
 

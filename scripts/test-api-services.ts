@@ -25,7 +25,7 @@ async function main() {
     assert("Status is 200", response.status === 200, `got ${response.status}`);
 
     const contentType = response.headers.get("content-type");
-    assert("Content-Type is JSON", contentType?.includes("application/json"));
+    assert("Content-Type is JSON", !!contentType?.includes("application/json"));
 
     const body = await response.json();
     assert("Response has success field", body.success === true);

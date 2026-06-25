@@ -525,7 +525,7 @@ async function main() {
       assert(`${test.name}: has data field`, body.data !== undefined);
       assert(
         `${test.name}: content-type is JSON`,
-        response.headers.get("content-type")?.includes("application/json")
+        !!response.headers.get("content-type")?.includes("application/json")
       );
     } catch (error) {
       console.error(`  ${test.name} error:`, (error as Error).message);

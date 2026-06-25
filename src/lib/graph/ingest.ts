@@ -160,7 +160,7 @@ export async function ingestBatch(
   for (const payload of payloads) {
     try {
       const result = await db.transaction(async (tx) => {
-        return await ingestDependencySummary(payload, tx as typeof db);
+        return await ingestDependencySummary(payload, tx as unknown as typeof db);
       });
       if (result.action === "inserted") inserted++;
       else updated++;

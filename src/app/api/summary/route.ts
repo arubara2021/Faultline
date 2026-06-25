@@ -85,7 +85,7 @@ export async function POST(request: NextRequest) {
           depth: br.depth,
           classification: svc?.classification ?? "unknown",
           ownerTeam: svc?.ownerTeam ?? "unknown",
-          dependencyType: br.dependencyType,
+          dependencyType: br.dependencyType ?? "unknown",
           isCustomerFacing: br.isCustomerFacing,
           revenuePerMinCents: Number(br.revenuePerMinCents) || 0,
         };

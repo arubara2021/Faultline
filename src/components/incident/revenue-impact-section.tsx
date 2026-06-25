@@ -177,8 +177,8 @@ export function RevenueImpactSection({ incidentId, resolved }: RevenueImpactSect
                   color: "#F1F5F9",
                 }}
                 labelStyle={{ color: "#94A3B8" }}
-                formatter={(value: number) => [
-                  "$" + value.toLocaleString("en-US"),
+                formatter={(value) => [
+                  "$" + Number(value ?? 0).toLocaleString("en-US"),
                   "Cumulative",
                 ]}
                 labelFormatter={(label) => label + " min elapsed"}

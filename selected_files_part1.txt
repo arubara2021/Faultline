@@ -1,0 +1,2645 @@
+===== FILE: src/app/api/summary/route.ts =====
+import { NextRequest, NextResponse } from "next/server";
+import { db, withDbRetry } from "@/lib/db";
+import {
+  incidents,
+  failureEvents,
+  services,
+  blastRadiusResults,
+  currentTrafficSnapshots,
+} from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
+import { traverseUpstream } from "@/lib/graph/traversal";
+import {
+  generateAISummary,
+  type IncidentSummaryInput,
+} from "@/lib/ai/summary";
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function err(status: number, error: string, message: string) {
+  return NextResponse.json({ success: false, error, message }, { status });
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    let body: Record<string, unknown>;
+    try {
+      body = await request.json();
+    } catch {
+      return err(400, "INVALID_JSON", "Invalid JSON body");
+    }
+
+    const { incidentId } = body as { incidentId?: string };
+
+    if (!incidentId || typeof incidentId !== "string") {
+      return err(400, "MISSING_INCIDENT_ID", "incidentId is required");
+    }
+    if (!UUID_RE.test(incidentId)) {
+      return err(400, "INVALID_UUID", "Invalid incident ID format");
+    }
+
+    const [incident] = await withDbRetry(() =>
+      db.select().from(incidents).where(eq(incidents.id, incidentId)).limit(1)
+    );
+    if (!incident) return err(404, "NOT_FOUND", "Incident not found");
+
+    const [rootFailure] = await withDbRetry(() =>
+      db
+        .select()
+        .from(failureEvents)
+        .where(eq(failureEvents.id, incident.rootFailureEventId))
+        .limit(1)
+    );
+    if (!rootFailure) return err(404, "ROOT_CAUSE_NOT_FOUND", "Root failure event not found");
+
+    const [failedService] = await withDbRetry(() =>
+      db
+        .select()
+        .from(services)
+        .where(eq(services.id, rootFailure.serviceId))
+        .limit(1)
+    );
+    if (!failedService) return err(404, "SERVICE_NOT_FOUND", "Failed service not found");
+
+    const [blastResults, allServices, allSnapshots, upstreamCandidates] =
+      await withDbRetry(() =>
+        Promise.all([
+          db
+            .select()
+            .from(blastRadiusResults)
+            .where(eq(blastRadiusResults.incidentId, incident.id)),
+          db.select().from(services),
+          db.select().from(currentTrafficSnapshots),
+          traverseUpstream(rootFailure.serviceId),
+        ])
+      );
+
+    const serviceMap = new Map(allServices.map((s) => [s.id, s]));
+
+    const blastRadius = blastResults
+      .map((br) => {
+        const svc = serviceMap.get(br.affectedServiceId);
+        return {
+          serviceName: svc?.name ?? "unknown",
+          depth: br.depth,
+          classification: svc?.classification ?? "unknown",
+          ownerTeam: svc?.ownerTeam ?? "unknown",
+          dependencyType: br.dependencyType,
+          isCustomerFacing: br.isCustomerFacing,
+          revenuePerMinCents: Number(br.revenuePerMinCents) || 0,
+        };
+      })
+      .sort((a, b) => a.depth - b.depth);
+
+    const customerFacing = blastRadius.filter((b) => b.isCustomerFacing);
+    const totalRevenuePerMinCents = customerFacing.reduce(
+      (sum, b) => sum + b.revenuePerMinCents,
+      0
+    );
+    const totalRevenuePerMinDollars = totalRevenuePerMinCents / 100;
+
+    const now = new Date();
+    const startedAt = new Date(incident.startedAt);
+    const minutesElapsed =
+      Math.round(((now.getTime() - startedAt.getTime()) / 60000) * 10) / 10;
+
+    const totalAccumulatedImpactCents = Math.round(
+      totalRevenuePerMinCents * minutesElapsed
+    );
+    const totalAccumulatedImpactDollars =
+      Math.round((totalAccumulatedImpactCents / 100) * 100) / 100;
+
+    const affectedCount = incident.affectedServiceCount ?? blastRadius.length + 1;
+    const maxDepth =
+      blastRadius.length > 0
+        ? Math.max(...blastRadius.map((b) => b.depth))
+        : 0;
+
+    const depth1Names = blastRadius
+      .filter((b) => b.depth === 1)
+      .map((b) => b.serviceName);
+    const depth2Names = blastRadius
+      .filter((b) => b.depth === 2)
+      .map((b) => b.serviceName);
+    const depth3PlusNames = blastRadius
+      .filter((b) => b.depth >= 3)
+      .map((b) => b.serviceName);
+
+    const serviceName = failedService.name;
+
+    const aiInput: IncidentSummaryInput = {
+      incident: {
+        id: incident.id,
+        startedAt: new Date(incident.startedAt),
+        resolvedAt: incident.resolvedAt ? new Date(incident.resolvedAt) : null,
+        affectedServiceCount: affectedCount,
+        maxDepth,
+      },
+      rootCause: {
+        serviceName,
+        failureType: rootFailure.failureType,
+        severity: rootFailure.severity,
+        signalDetails: (rootFailure.signalDetails ?? null) as Record<
+          string,
+          unknown
+        > | null,
+      },
+      blastRadius,
+      upstreamCandidates,
+      revenueImpact: {
+        totalRevenuePerMinCents,
+        minutesElapsed,
+        totalAccumulatedImpactCents,
+      },
+    };
+
+    const aiSummary = await generateAISummary(aiInput);
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: {
+          incident: {
+            id: incident.id,
+            status: incident.resolvedAt ? "resolved" : "active",
+            startedAt: incident.startedAt,
+            minutesElapsed,
+          },
+          rootCause: {
+            serviceName,
+            failureType: rootFailure.failureType,
+            severity: rootFailure.severity,
+            signalDetails: rootFailure.signalDetails,
+          },
+          impact: {
+            totalServicesAffected: affectedCount,
+            customerFacingAffected: customerFacing.length,
+            revenuePerMinCents: totalRevenuePerMinCents,
+            revenuePerMinDollars: totalRevenuePerMinDollars,
+            totalAccumulatedImpactCents,
+            totalAccumulatedImpactDollars,
+          },
+          cascade: {
+            depth1: depth1Names,
+            depth2: depth2Names,
+            depth3Plus: depth3PlusNames,
+          },
+          ai: {
+            headline: aiSummary.headline,
+            whatHappened: aiSummary.whatHappened,
+            rootCauseAnalysis: aiSummary.rootCauseAnalysis,
+            blastRadiusSummary: aiSummary.blastRadiusSummary,
+            revenueImpactSummary: aiSummary.revenueImpactSummary,
+            fixPriority: aiSummary.fixPriority,
+          },
+          summary: aiSummary.fullSummary,
+          upstreamCandidates,
+        },
+      },
+      { status: 200 }
+    );
+  } catch (error) {
+    console.error("[API] POST /api/summary failed:", error);
+    return err(500, "INTERNAL_ERROR", "Failed to generate summary");
+  }
+}
+
+===== FILE: src/app/page.tsx =====
+"use client";
+
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import Link from "next/link";
+import { motion, useMotionValue, useSpring, useTransform, AnimatePresence } from "framer-motion";
+import { ArrowRight, DollarSign, GitBranch, Shield, Zap, ChevronRight, Radio, Eye, TrendingDown, Activity, Server, Database } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { useServiceGraph } from "@/lib/hooks/use-service-graph";
+
+function useIncidents() {
+  return { data: { activeCount: 0 } };
+}
+
+// ── Canvas Particle Background ──────────────────────────────────────
+function ParticleField() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    let raf = 0;
+    const particles: Array<{ x: number; y: number; vx: number; vy: number; size: number; alpha: number }> = [];
+    const CONNECTION_DIST = 120;
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      canvas!.width = window.innerWidth * dpr;
+      canvas!.height = window.innerHeight * dpr;
+      canvas!.style.width = window.innerWidth + "px";
+      canvas!.style.height = window.innerHeight + "px";
+      ctx!.scale(dpr, dpr);
+    }
+
+    function init() {
+      resize();
+      const count = Math.min(80, Math.floor(window.innerWidth * 0.04));
+      particles.length = 0;
+      for (let i = 0; i < count; i++) {
+        particles.push({
+          x: Math.random() * window.innerWidth,
+          y: Math.random() * window.innerHeight,
+          vx: (Math.random() - 0.5) * 0.3,
+          vy: (Math.random() - 0.5) * 0.3,
+          size: Math.random() * 1.5 + 0.5,
+          alpha: Math.random() * 0.3 + 0.05,
+        });
+      }
+    }
+
+    function draw(time: number) {
+      if (!canvas || !ctx) return;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      ctx.clearRect(0, 0, w, h);
+
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.x < 0) p.x = w;
+        if (p.x > w) p.x = 0;
+        if (p.y < 0) p.y = h;
+        if (p.y > h) p.y = 0;
+
+        const pulse = Math.sin(time * 0.001 + i) * 0.15 + 0.85;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * pulse, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(99, 102, 241, " + (p.alpha * pulse) + ")";
+        ctx.fill();
+
+        for (let j = i + 1; j < particles.length; j++) {
+          const q = particles[j];
+          const dx = p.x - q.x;
+          const dy = p.y - q.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < CONNECTION_DIST) {
+            const alpha = (1 - dist / CONNECTION_DIST) * 0.06;
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(q.x, q.y);
+            ctx.strokeStyle = "rgba(99, 102, 241, " + alpha + ")";
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
+          }
+        }
+      }
+
+      raf = requestAnimationFrame(draw);
+    }
+
+    init();
+    raf = requestAnimationFrame(draw);
+    window.addEventListener("resize", init);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", init);
+    };
+  }, []);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="pointer-events-none fixed inset-0 z-0"
+      style={{ opacity: 0.6 }}
+    />
+  );
+}
+
+// ── Animated Counter with IntersectionObserver ──────────────────────
+function AnimatedCounter({ target, suffix = "", prefix = "" }: { target: number; suffix?: string; prefix?: string }) {
+  const [count, setCount] = useState(0);
+  const ref = useRef<HTMLSpanElement>(null);
+  const [isVisible, setIsVisible] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) setIsVisible(true); },
+      { threshold: 0.3 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!isVisible) return;
+    let current = 0;
+    const duration = 2000;
+    const start = performance.now();
+    function tick(now: number) {
+      const progress = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 4);
+      current = Math.floor(eased * target);
+      setCount(current);
+      if (progress < 1) requestAnimationFrame(tick);
+      else setCount(target);
+    }
+    requestAnimationFrame(tick);
+  }, [target, isVisible]);
+
+  return (
+    <span ref={ref} className="font-metric tabular-nums text-[40px] font-bold leading-none tracking-tight text-white sm:text-[52px] lg:text-[60px]">
+      {prefix}{count}{suffix}
+    </span>
+  );
+}
+
+// ── Spotlight Mouse Effect ──────────────────────────────────────────
+function MouseSpotlight() {
+  const ref = useRef<HTMLDivElement>(null);
+  const x = useMotionValue(0);
+  const y = useMotionValue(0);
+  const springX = useSpring(x, { stiffness: 150, damping: 20 });
+  const springY = useSpring(y, { stiffness: 150, damping: 20 });
+
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      x.set(e.clientX);
+      y.set(e.clientY);
+    }
+    window.addEventListener("mousemove", onMove);
+    return () => window.removeEventListener("mousemove", onMove);
+  }, [x, y]);
+
+  return (
+    <motion.div
+      ref={ref}
+      className="pointer-events-none fixed inset-0 z-[1]"
+      style={{
+        background: useTransform(
+          [springX, springY],
+          ([lx, ly]) => "radial-gradient(600px circle at " + lx + "px " + ly + "px, rgba(99,102,241,0.04), transparent 60%)"
+        ),
+      }}
+    />
+  );
+}
+
+// ── SVG Graph Visualization ─────────────────────────────────────────
+function HeroGraph() {
+  const nodes = useMemo(() => [
+    { id: "gateway", x: 200, y: 60, r: 18, color: "#818cf8", label: "api-gateway", layer: 0 },
+    { id: "catalog", x: 80, y: 80, r: 14, color: "#818cf8", label: "product-catalog", layer: 0 },
+    { id: "checkout", x: 320, y: 70, r: 14, color: "#818cf8", label: "checkout-api", layer: 0 },
+    { id: "signup", x: 420, y: 60, r: 12, color: "#818cf8", label: "signup-flow", layer: 0 },
+    { id: "fraud", x: 160, y: 160, r: 13, color: "#34d399", label: "fraud-detector", layer: 1 },
+    { id: "cart", x: 280, y: 150, r: 11, color: "#34d399", label: "cart-service", layer: 1 },
+    { id: "user", x: 60, y: 170, r: 11, color: "#34d399", label: "user-service", layer: 1 },
+    { id: "inventory", x: 380, y: 165, r: 10, color: "#34d399", label: "inventory", layer: 1 },
+    { id: "billing", x: 460, y: 155, r: 10, color: "#34d399", label: "billing", layer: 1 },
+    { id: "analytics", x: 100, y: 240, r: 9, color: "#34d399", label: "analytics", layer: 1 },
+    { id: "notification", x: 350, y: 240, r: 9, color: "#34d399", label: "notification", layer: 1 },
+    { id: "postgres", x: 230, y: 300, r: 20, color: "#ef4444", label: "postgres-primary", layer: 2 },
+    { id: "recommendation", x: 420, y: 290, r: 9, color: "#34d399", label: "recommendation", layer: 2 },
+    { id: "payment", x: 130, y: 310, r: 10, color: "#34d399", label: "payment", layer: 2 },
+  ], []);
+
+  const edges = useMemo(() => [
+    { from: "gateway", to: "catalog" },
+    { from: "gateway", to: "checkout" },
+    { from: "gateway", to: "signup" },
+    { from: "catalog", to: "fraud" },
+    { from: "catalog", to: "user" },
+    { from: "checkout", to: "cart" },
+    { from: "checkout", to: "billing" },
+    { from: "signup", to: "inventory" },
+    { from: "fraud", to: "postgres", active: true },
+    { from: "cart", to: "postgres", active: true },
+    { from: "user", to: "postgres", active: true },
+    { from: "billing", to: "postgres", active: true },
+    { from: "inventory", to: "postgres", active: true },
+    { from: "analytics", to: "postgres", active: true },
+    { from: "notification", to: "postgres", active: true },
+    { from: "checkout", to: "analytics" },
+    { from: "cart", to: "recommendation" },
+    { from: "billing", to: "payment" },
+    { from: "payment", to: "postgres", active: true },
+  ], []);
+
+  const nodeMap = useMemo(() => new Map(nodes.map(n => [n.id, n])), [nodes]);
+
+  function getCubicPath(from: typeof nodes[0], to: typeof nodes[0]) {
+    const midY = (from.y + to.y) / 2;
+    return "M" + from.x + "," + from.y + " C" + from.x + "," + midY + " " + to.x + "," + midY + " " + to.x + "," + to.y;
+  }
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 40, scale: 0.95 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ duration: 1.2, delay: 0.8, ease: [0.16, 1, 0.3, 1] }}
+      className="relative mx-auto mt-12 w-full max-w-[540px] sm:mt-16"
+    >
+      {/* Glow behind graph */}
+      <div
+        className="pointer-events-none absolute left-1/2 top-1/2 h-[300px] w-[400px] -translate-x-1/2 -translate-y-1/2 rounded-full"
+        style={{
+          background: "radial-gradient(ellipse, rgba(99,102,241,0.08) 0%, transparent 70%)",
+          filter: "blur(40px)",
+        }}
+      />
+
+      <div className="overflow-hidden rounded-2xl border border-white/[0.05] bg-[#08080c]/90 shadow-[0_8px_80px_rgba(0,0,0,0.6)] backdrop-blur-xl">
+        {/* Title bar */}
+        <div className="flex items-center gap-3 border-b border-white/[0.04] px-4 py-2.5">
+          <div className="flex gap-1.5">
+            <div className="size-2 rounded-full bg-[#ff5f57]/70" />
+            <div className="size-2 rounded-full bg-[#ffbd2e]/70" />
+            <div className="size-2 rounded-full bg-[#28c840]/70" />
+          </div>
+          <span className="ml-2 text-[10px] text-[#475569]" style={{ fontFamily: "var(--font-mono)" }}>
+            dependency-graph.live
+          </span>
+          <div className="ml-auto flex items-center gap-1.5">
+            <span className="size-1.5 rounded-full bg-red-500 animate-pulse" />
+            <span className="text-[9px] font-medium tracking-wider text-red-400/70" style={{ fontFamily: "var(--font-mono)" }}>LIVE</span>
+          </div>
+        </div>
+
+        {/* SVG Graph */}
+        <div className="relative px-2 py-3 sm:px-4 sm:py-5">
+          <svg viewBox="0 0 500 360" className="w-full" style={{ height: "auto" }}>
+            <defs>
+              <filter id="glow-red">
+                <feGaussianBlur stdDeviation="6" result="blur" />
+                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+              </filter>
+              <filter id="glow-indigo">
+                <feGaussianBlur stdDeviation="4" result="blur" />
+                <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+              </filter>
+              <linearGradient id="edge-active" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#ef4444" stopOpacity="0.6" />
+                <stop offset="100%" stopColor="#ef4444" stopOpacity="0.1" />
+              </linearGradient>
+              <linearGradient id="edge-normal" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#6366f1" stopOpacity="0.3" />
+                <stop offset="100%" stopColor="#6366f1" stopOpacity="0.1" />
+              </linearGradient>
+            </defs>
+
+            {/* Edges */}
+            {edges.map((edge, i) => {
+              const from = nodeMap.get(edge.from)!;
+              const to = nodeMap.get(edge.to)!;
+              const path = getCubicPath(from, to);
+              const pathId = "edge-path-" + i;
+              return (
+                <g key={pathId}>
+                  <motion.path
+                    d={path}
+                    fill="none"
+                    stroke={edge.active ? "url(#edge-active)" : "url(#edge-normal)"}
+                    strokeWidth={edge.active ? 1.5 : 1}
+                    strokeDasharray={edge.active ? "6 3" : "4 4"}
+                    initial={{ pathLength: 0, opacity: 0 }}
+                    animate={{ pathLength: 1, opacity: 1 }}
+                    transition={{ duration: 1.2, delay: 1.2 + i * 0.05, ease: "easeOut" }}
+                  />
+                  {/* Traveling particle */}
+                  {edge.active && (
+                    <circle r="2.5" fill="#ef4444" opacity="0.9">
+                      <animateMotion
+                        dur={2.5 + i * 0.3 + "s"}
+                        repeatCount="indefinite"
+                        path={path}
+                        begin={2 + i * 0.2 + "s"}
+                      />
+                    </circle>
+                  )}
+                  {!edge.active && i % 3 === 0 && (
+                    <circle r="1.5" fill="#818cf8" opacity="0.5">
+                      <animateMotion
+                        dur={4 + i * 0.2 + "s"}
+                        repeatCount="indefinite"
+                        path={path}
+                        begin={2.5 + i * 0.15 + "s"}
+                      />
+                    </circle>
+                  )}
+                </g>
+              );
+            })}
+
+            {/* Nodes */}
+            {nodes.map((node, i) => (
+              <motion.g
+                key={node.id}
+                initial={{ opacity: 0, scale: 0 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.5, delay: 1 + i * 0.06, ease: [0.34, 1.56, 0.64, 1] }}
+              >
+                {/* Outer glow */}
+                {node.color === "#ef4444" && (
+                  <>
+                    <motion.circle
+                      cx={node.x}
+                      cy={node.y}
+                      r={node.r + 12}
+                      fill="none"
+                      stroke="#ef4444"
+                      strokeWidth="1"
+                      opacity="0"
+                      animate={{ opacity: [0, 0.3, 0], r: [node.r + 8, node.r + 20, node.r + 8] }}
+                      transition={{ duration: 3, repeat: Infinity, delay: 2 }}
+                    />
+                    <circle cx={node.x} cy={node.y} r={node.r + 6} fill="none" stroke="#ef4444" strokeWidth="0.5" opacity="0.2" filter="url(#glow-red)" />
+                  </>
+                )}
+                {node.color === "#818cf8" && (
+                  <circle cx={node.x} cy={node.y} r={node.r + 4} fill="none" stroke="#818cf8" strokeWidth="0.5" opacity="0.15" />
+                )}
+
+                {/* Node body */}
+                <circle
+                  cx={node.x}
+                  cy={node.y}
+                  r={node.r}
+                  fill="#0d0e12"
+                  stroke={node.color}
+                  strokeWidth={node.color === "#ef4444" ? 2 : 1.2}
+                  filter={node.color === "#ef4444" ? "url(#glow-red)" : node.color === "#818cf8" ? "url(#glow-indigo)" : undefined}
+                />
+
+                {/* Inner glow */}
+                <circle
+                  cx={node.x}
+                  cy={node.y}
+                  r={node.r - 3}
+                  fill={node.color}
+                  opacity={node.color === "#ef4444" ? 0.15 : 0.08}
+                />
+
+                {/* Center dot */}
+                <circle cx={node.x} cy={node.y} r="2" fill={node.color} opacity="0.8" />
+
+                {/* Label */}
+                <motion.text
+                  x={node.x}
+                  y={node.y + node.r + 12}
+                  textAnchor="middle"
+                  fill={node.color === "#ef4444" ? "#ef4444" : "#64748b"}
+                  fontSize="8"
+                  fontFamily="var(--font-mono)"
+                  fontWeight={node.color === "#ef4444" ? "600" : "400"}
+                  opacity={node.color === "#ef4444" ? 0.9 : 0.6}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: node.color === "#ef4444" ? 0.9 : 0.6 }}
+                  transition={{ delay: 1.5 + i * 0.06 }}
+                >
+                  {node.label}
+                </motion.text>
+              </motion.g>
+            ))}
+          </svg>
+        </div>
+
+        {/* Bottom bar */}
+        <div className="flex items-center justify-between border-t border-white/[0.04] px-4 py-2">
+          <span className="text-[9px] text-[#475569]" style={{ fontFamily: "var(--font-mono)" }}>14 services · 22 edges</span>
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1 text-[9px] text-[#6366f1]/60" style={{ fontFamily: "var(--font-mono)" }}>
+              <span className="size-1.5 rounded-full bg-[#818cf8]" /> CF
+            </span>
+            <span className="flex items-center gap-1 text-[9px] text-[#34d399]/60" style={{ fontFamily: "var(--font-mono)" }}>
+              <span className="size-1.5 rounded-full bg-[#34d399]" /> Internal
+            </span>
+            <span className="flex items-center gap-1 text-[9px] text-[#ef4444]/60" style={{ fontFamily: "var(--font-mono)" }}>
+              <span className="size-1.5 rounded-full bg-[#ef4444]" /> Infra
+            </span>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// ── Feature Card with Hover Effect ──────────────────────────────────
+function FeatureCard({ icon: Icon, title, description, accent, delay }: {
+  icon: any; title: string; description: string; accent: string; delay: number;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 30 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, margin: "-40px" }}
+      transition={{ duration: 0.7, delay, ease: [0.16, 1, 0.3, 1] }}
+    >
+      <div className="group relative overflow-hidden rounded-2xl border border-white/[0.04] bg-[#0a0a0f] transition-all duration-500 hover:border-white/[0.08]">
+        {/* Gradient hover glow */}
+        <div
+          className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-500 group-hover:opacity-100"
+          style={{ background: "radial-gradient(400px circle at 50% 0%, " + accent + "08, transparent 60%)" }}
+        />
+        {/* Top accent line */}
+        <div
+          className="absolute left-0 right-0 top-0 h-px opacity-0 transition-opacity duration-500 group-hover:opacity-100"
+          style={{ background: "linear-gradient(90deg, transparent, " + accent + "50, transparent)" }}
+        />
+
+        <div className="relative p-5 sm:p-6">
+          <div
+            className="mb-4 flex size-11 items-center justify-center rounded-xl transition-transform duration-500 group-hover:scale-110"
+            style={{ background: accent + "0c", border: "1px solid " + accent + "18" }}
+          >
+            <Icon className="size-5" style={{ color: accent }} />
+          </div>
+          <h3 className="mb-2 text-[15px] font-semibold text-white sm:text-[16px]">{title}</h3>
+          <p className="text-[13px] leading-[1.75] text-[#64748b]">{description}</p>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// ── Main Hero Page ──────────────────────────────────────────────────
+export default function HomePage() {
+  const { data: graph } = useServiceGraph();
+  const { data: incidents } = useIncidents();
+
+  const nodeCount = graph?.meta?.nodeCount ?? 14;
+  const edgeCount = graph?.meta?.edgeCount ?? 22;
+  const hasActiveIncident = (incidents?.activeCount ?? 0) > 0;
+
+  const stagger = {
+    hidden: { opacity: 0 },
+    visible: { opacity: 1, transition: { staggerChildren: 0.1 } },
+  };
+  const fadeUp = {
+    hidden: { opacity: 0, y: 28 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.8, ease: [0.16, 1, 0.3, 1] } },
+  };
+
+  return (
+    <div className="relative min-h-[calc(100vh-52px)] overflow-hidden bg-[#040406]">
+      <ParticleField />
+      <MouseSpotlight />
+
+      {/* Radial gradient background */}
+      <div className="pointer-events-none fixed inset-0 z-0">
+        <div
+          className="absolute left-1/2 top-0 h-[700px] w-[900px] -translate-x-1/2 -translate-y-1/3"
+          style={{ background: "radial-gradient(ellipse, rgba(99,102,241,0.06) 0%, transparent 65%)" }}
+        />
+        <div
+          className="absolute bottom-0 left-1/4 h-[500px] w-[500px] -translate-x-1/2 translate-y-1/3"
+          style={{ background: "radial-gradient(ellipse, rgba(244,63,94,0.03) 0%, transparent 65%)" }}
+        />
+      </div>
+
+      <div className="relative z-10 mx-auto max-w-[1200px] px-4 sm:px-6 lg:px-8">
+
+        {/* ─── Hero Section ─── */}
+        <motion.div
+          variants={stagger}
+          initial="hidden"
+          animate="visible"
+          className="flex flex-col items-center pt-16 pb-6 sm:pt-24 sm:pb-10 lg:pt-32 lg:pb-14"
+        >
+          {/* Status pill */}
+          <motion.div variants={fadeUp} className="mb-8 sm:mb-10">
+            <div className={cn(
+              "group inline-flex items-center gap-2.5 rounded-full border px-4 py-2 text-[11px] font-medium tracking-wide backdrop-blur-sm",
+              hasActiveIncident
+                ? "border-red-500/20 bg-red-500/[0.04] text-red-400"
+                : "border-emerald-500/20 bg-emerald-500/[0.04] text-emerald-400"
+            )} style={{ fontFamily: "var(--font-mono)" }}>
+              <span className="relative flex size-2">
+                <span className={cn(
+                  "absolute inline-flex size-full animate-ping rounded-full opacity-40",
+                  hasActiveIncident ? "bg-red-400" : "bg-emerald-400"
+                )} />
+                <span className={cn(
+                  "relative inline-flex size-2 rounded-full",
+                  hasActiveIncident ? "bg-red-500" : "bg-emerald-500"
+                )} />
+              </span>
+              {hasActiveIncident ? "Active incident detected" : "All systems operational"}
+              <ChevronRight className="size-3 opacity-30 transition-opacity group-hover:opacity-60" />
+            </div>
+          </motion.div>
+
+          {/* Headline */}
+          <motion.h1
+            variants={fadeUp}
+            className="text-center text-[38px] font-bold leading-[1.05] tracking-[-0.03em] text-white sm:text-[56px] lg:text-[76px]"
+          >
+            Your blast radius.
+            <br />
+            <span
+              className="inline-block bg-clip-text text-transparent"
+              style={{ backgroundImage: "linear-gradient(135deg, #818cf8 0%, #a78bfa 30%, #f43f5e 70%, #fb923c 100%)" }}
+            >
+              Quantified.
+            </span>
+          </motion.h1>
+
+          {/* Subtitle */}
+          <motion.p
+            variants={fadeUp}
+            className="mt-5 max-w-[460px] text-center text-[14px] leading-[1.8] text-[#64748b] sm:mt-7 sm:text-[16px] lg:max-w-[520px]"
+          >
+            Map your service dependencies. Track the financial impact of every cascading failure. Resolve incidents faster with AI-powered root cause analysis.
+          </motion.p>
+
+          {/* CTA Buttons */}
+          <motion.div
+            variants={fadeUp}
+            className="mt-9 flex flex-col items-center gap-3 sm:mt-11 sm:flex-row sm:gap-4"
+          >
+            <Link
+              href="/dashboard"
+              className="group relative flex items-center gap-2.5 overflow-hidden rounded-xl bg-white px-8 py-3.5 text-[14px] font-semibold text-[#040406] shadow-[0_0_40px_rgba(99,102,241,0.12)] transition-all duration-300 hover:shadow-[0_0_60px_rgba(99,102,241,0.2)] sm:px-10 sm:text-[15px]"
+            >
+              <span className="relative z-10">Enter Dashboard</span>
+              <ArrowRight className="relative z-10 size-4 transition-transform duration-300 group-hover:translate-x-1" />
+            </Link>
+            <Link
+              href="/services"
+              className="flex items-center gap-2 rounded-xl border border-white/[0.07] px-8 py-3.5 text-[14px] font-medium text-[#94a3b8] backdrop-blur-sm transition-all duration-300 hover:border-white/[0.14] hover:text-white sm:px-10 sm:text-[15px]"
+            >
+              View Services
+            </Link>
+          </motion.div>
+        </motion.div>
+
+        {/* ─── Live Stats Grid ─── */}
+        <motion.div
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.9, delay: 0.5, ease: [0.16, 1, 0.3, 1] }}
+          className="mx-auto grid max-w-[780px] grid-cols-3 gap-px overflow-hidden rounded-2xl border border-white/[0.04] bg-white/[0.02]"
+        >
+          {[
+            { value: nodeCount, suffix: "", prefix: "", label: "Services mapped", accent: "indigo" },
+            { value: edgeCount, suffix: "", prefix: "", label: "Dependency edges", accent: "purple" },
+            { value: 10, suffix: "K", prefix: "$", label: "Max revenue at risk/min", accent: "red" },
+          ].map((stat, i) => (
+            <motion.div
+              key={stat.label}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.5, delay: 0.7 + i * 0.1 }}
+              className="group flex flex-col items-center gap-2 bg-[#08080c] px-3 py-5 transition-colors duration-300 hover:bg-[#0c0c12] sm:px-6 sm:py-7"
+            >
+              <AnimatedCounter target={stat.value} suffix={stat.suffix} prefix={stat.prefix} />
+              <span
+                className="text-[9px] font-medium uppercase tracking-[0.15em] text-[#475569] sm:text-[10px]"
+                style={{ fontFamily: "var(--font-mono)" }}
+              >
+                {stat.label}
+              </span>
+            </motion.div>
+          ))}
+        </motion.div>
+
+        {/* ─── Graph Preview ─── */}
+        <HeroGraph />
+
+        {/* ─── Features ─── */}
+        <div className="mx-auto mt-16 grid max-w-[960px] grid-cols-1 gap-4 sm:mt-24 sm:grid-cols-3 sm:gap-5">
+          <FeatureCard
+            icon={Eye}
+            title="Dependency Mapping"
+            description="Auto-discover your service dependency graph. Every edge, every connection, visualized in real time."
+            accent="#818cf8"
+            delay={0}
+          />
+          <FeatureCard
+            icon={TrendingDown}
+            title="Revenue Blast Radius"
+            description="Quantify the financial impact of every outage. See exactly how much each cascading failure costs per minute."
+            accent="#f43f5e"
+            delay={0.1}
+          />
+          <FeatureCard
+            icon={Shield}
+            title="AI Root Cause Analysis"
+            description="Instantly identify the root cause and get ranked fix priorities powered by upstream dependency analysis."
+            accent="#10b981"
+            delay={0.2}
+          />
+        </div>
+
+        {/* ─── How It Works ─── */}
+        <motion.div
+          initial={{ opacity: 0, y: 30 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true, margin: "-50px" }}
+          transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
+          className="mx-auto mt-20 max-w-[700px] sm:mt-28"
+        >
+          <div className="text-center">
+            <span
+              className="mb-3 inline-block text-[10px] font-semibold uppercase tracking-[0.2em] text-indigo-400/50 sm:text-[11px]"
+              style={{ fontFamily: "var(--font-mono)" }}
+            >
+              How it works
+            </span>
+            <h2 className="text-[24px] font-bold text-white sm:text-[30px]">
+              Three steps to incident clarity
+            </h2>
+          </div>
+
+          <div className="mt-10">
+            {[
+              { step: "01", title: "Map", desc: "Your service dependency graph is auto-discovered — 14 services, 22 edges, zero config.", icon: GitBranch, accent: "#818cf8" },
+              { step: "02", title: "Detect", desc: "Real-time health monitoring catches failures the moment they happen and traces the cascade.", icon: Activity, accent: "#f59e0b" },
+              { step: "03", title: "Quantify", desc: "Revenue impact, blast radius, and AI-powered fix priority — all in one view.", icon: DollarSign, accent: "#f43f5e" },
+            ].map((item, i) => {
+              const Icon = item.icon;
+              return (
+                <motion.div
+                  key={item.step}
+                  initial={{ opacity: 0, x: -20 }}
+                  whileInView={{ opacity: 1, x: 0 }}
+                  viewport={{ once: true }}
+                  transition={{ duration: 0.6, delay: i * 0.15 }}
+                  className="group flex items-start gap-5 border-b border-white/[0.04] py-6 last:border-0 sm:gap-7 sm:py-7"
+                >
+                  <div className="flex items-center gap-3 sm:gap-4">
+                    <span
+                      className="font-metric text-[13px] font-bold sm:text-[15px]"
+                      style={{ color: item.accent, fontFamily: "var(--font-mono)" }}
+                    >
+                      {item.step}
+                    </span>
+                    <div
+                      className="flex size-9 items-center justify-center rounded-xl sm:size-10"
+                      style={{ background: item.accent + "0c", border: "1px solid " + item.accent + "15" }}
+                    >
+                      <Icon className="size-4" style={{ color: item.accent }} />
+                    </div>
+                  </div>
+                  <div>
+                    <h3 className="mb-1 text-[15px] font-semibold text-white sm:text-[16px]">{item.title}</h3>
+                    <p className="text-[13px] leading-[1.75] text-[#64748b]">{item.desc}</p>
+                  </div>
+                </motion.div>
+              );
+            })}
+          </div>
+        </motion.div>
+
+        {/* ─── Bottom CTA ─── */}
+        <motion.div
+          initial={{ opacity: 0 }}
+          whileInView={{ opacity: 1 }}
+          viewport={{ once: true }}
+          transition={{ duration: 1 }}
+          className="mt-20 pb-20 text-center sm:mt-28 sm:pb-28"
+        >
+          <h2 className="text-[22px] font-bold text-white sm:text-[28px]">
+            Ready to see your blast radius?
+          </h2>
+          <p className="mt-3 text-[13px] text-[#64748b] sm:text-[14px]">
+            Simulate failures. Track cascades. Quantify revenue loss. All in real time.
+          </p>
+          <div className="mt-7 flex justify-center sm:mt-8">
+            <Link
+              href="/dashboard"
+              className="group flex items-center gap-2.5 rounded-xl bg-white px-8 py-3.5 text-[14px] font-semibold text-[#040406] shadow-[0_0_40px_rgba(99,102,241,0.1)] transition-all duration-300 hover:shadow-[0_0_60px_rgba(99,102,241,0.18)] sm:text-[15px]"
+            >
+              <Zap className="size-4 text-indigo-500" />
+              Launch Dashboard
+              <ArrowRight className="size-4 transition-transform duration-300 group-hover:translate-x-1" />
+            </Link>
+          </div>
+
+          {/* Tech stack badges */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.8, delay: 0.3 }}
+            className="mt-10 flex flex-wrap items-center justify-center gap-2.5 sm:mt-12"
+          >
+            {["Next.js", "Aurora PostgreSQL", "AWS Bedrock", "Vercel"].map((tech) => (
+              <span
+                key={tech}
+                className="rounded-lg border border-white/[0.04] bg-white/[0.02] px-3 py-1.5 text-[10px] font-medium text-[#475569] backdrop-blur-sm transition-colors duration-200 hover:border-white/[0.08] hover:text-[#64748b] sm:text-[11px]"
+                style={{ fontFamily: "var(--font-mono)" }}
+              >
+                {tech}
+              </span>
+            ))}
+          </motion.div>
+        </motion.div>
+      </div>
+    </div>
+  );
+}
+
+===== FILE: src/components/dashboard/ai-hero-banner.tsx =====
+"use client";
+
+import { useState, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import Link from "next/link";
+import {
+  Sparkles,
+  Network,
+  Zap,
+  DollarSign,
+  Clock,
+  ArrowRight,
+  ShieldCheck,
+  Loader2,
+  X,
+  ChevronDown,
+  AlertTriangle,
+  Target,
+  Wrench,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+import { mutate } from "swr";
+import { toast } from "sonner";
+import { useIncidentSummary } from "@/lib/hooks/use-summary";
+import { useIncident } from "@/lib/hooks/use-incident";
+import { useResolve } from "@/lib/hooks/use-resolve";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+
+interface AiHeroBannerProps {
+  incidentId: string;
+}
+
+function formatMoney(cents: number): string {
+  const dollars = cents / 100;
+  if (dollars >= 1_000_000) return `$${(dollars / 1_000_000).toFixed(1)}M`;
+  if (dollars >= 1_000) return `$${(dollars / 1_000).toFixed(1)}k`;
+  return `$${dollars.toFixed(0)}`;
+}
+
+function formatMoneyFull(cents: number): string {
+  return `$${(cents / 100).toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  })}`;
+}
+
+export function AiHeroBanner({ incidentId }: AiHeroBannerProps) {
+  const { data: summary } = useIncidentSummary(incidentId);
+  const { data: incident } = useIncident(incidentId);
+  const { trigger: resolveTrigger, isMutating } = useResolve();
+  const [dismissed, setDismissed] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
+  const [showResolveConfirm, setShowResolveConfirm] = useState(false);
+
+  const headline = summary?.ai?.headline ?? "";
+  const whatHappened = summary?.ai?.whatHappened ?? "";
+  const rootCause = summary?.ai?.rootCauseAnalysis ?? "";
+  const fixPriority = summary?.ai?.fixPriority ?? "";
+
+  const affectedCount = incident?.incident?.affectedServiceCount ?? summary?.impact?.totalServicesAffected ?? 0;
+  const maxDepth = incident?.incident?.maxDepth ?? 0;
+  const revenuePerMin = incident?.revenueImpact?.totalRevenuePerMinCents ?? summary?.impact?.revenuePerMinCents ?? 0;
+  const totalImpact = incident?.revenueImpact?.totalAccumulatedImpactCents ?? summary?.impact?.totalAccumulatedImpactCents ?? 0;
+  const startedAt = incident?.incident?.startedAt ?? summary?.incident?.startedAt;
+
+  const duration = (() => {
+    if (!startedAt) return "—";
+    const diff = Math.max(0, Date.now() - new Date(startedAt).getTime());
+    const m = Math.floor(diff / 60000);
+    const h = Math.floor(m / 60);
+    const mm = m % 60;
+    if (h > 0) return `${h}h ${mm}m`;
+    return `${m}m`;
+  })();
+
+  const severity = headline.includes("CRITICAL")
+    ? "critical"
+    : headline.includes("WARNING")
+      ? "warning"
+      : "info";
+
+  const handleResolve = useCallback(async () => {
+    try {
+      const result = await resolveTrigger({ incidentId });
+      toast.success("Incident resolved", {
+        description: `${result.durationFormatted} — ${formatMoneyFull(result.totalRevenueImpactCents)} total impact`,
+      });
+      await Promise.all([
+        mutate("/api/incidents"),
+        mutate("/api/services"),
+        mutate("/api/graph"),
+        mutate("/api/summary"),
+      ]);
+    } catch (err) {
+      toast.error("Failed to resolve", {
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  }, [incidentId, resolveTrigger]);
+
+  if (dismissed || !summary?.ai) return null;
+
+  const borderColor = severity === "critical"
+    ? "border-red-500/20"
+    : severity === "warning"
+      ? "border-amber-500/20"
+      : "border-blue-500/20";
+
+  const glowColor = severity === "critical"
+    ? "shadow-[0_8px_40px_rgba(239,68,68,0.08)]"
+    : severity === "warning"
+      ? "shadow-[0_8px_40px_rgba(245,158,11,0.08)]"
+      : "shadow-[0_8px_40px_rgba(59,130,246,0.08)]";
+
+  return (
+    <>
+      <motion.div
+        initial={{ opacity: 0, y: -8 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -8 }}
+        transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+      >
+        <div className={cn(
+          "relative overflow-hidden rounded-2xl border bg-gradient-to-br from-[#111113] to-[#0e0e10]",
+          borderColor,
+          glowColor
+        )}>
+          {/* Animated top edge */}
+          <motion.div
+            className={cn(
+              "absolute inset-x-0 top-0 h-[2px]",
+              severity === "critical"
+                ? "bg-gradient-to-r from-transparent via-red-500 to-transparent"
+                : severity === "warning"
+                  ? "bg-gradient-to-r from-transparent via-amber-500 to-transparent"
+                  : "bg-gradient-to-r from-transparent via-blue-500 to-transparent"
+            )}
+            animate={{ opacity: [0.3, 0.8, 0.3] }}
+            transition={{ duration: 2.5, repeat: Infinity, ease: "easeInOut" }}
+          />
+
+          {/* Top bar */}
+          <div className="flex items-center justify-between border-b border-white/[0.04] px-5 py-3">
+            <div className="flex items-center gap-2.5">
+              <div className="flex size-6 items-center justify-center rounded-lg bg-violet-500/10">
+                <Sparkles className="size-3.5 text-violet-400" />
+              </div>
+              <span
+                className="text-[11px] font-bold tracking-[0.1em] uppercase text-violet-400"
+                style={{ fontFamily: "var(--font-mono)" }}
+              >
+                AI Incident Detected
+              </span>
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
+                  severity === "critical"
+                    ? "bg-red-500/10 text-red-400 ring-1 ring-red-500/20"
+                    : severity === "warning"
+                      ? "bg-amber-500/10 text-amber-400 ring-1 ring-amber-500/20"
+                      : "bg-blue-500/10 text-blue-400 ring-1 ring-blue-500/20"
+                )}
+                style={{ fontFamily: "var(--font-mono)" }}
+              >
+                <span className={cn(
+                  "size-1.5 rounded-full",
+                  severity === "critical" ? "bg-red-400 animate-pulse" : "bg-amber-400"
+                )} />
+                {severity}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDismissed(true)}
+              className="rounded-lg p-1.5 text-white/20 transition-colors hover:bg-white/[0.04] hover:text-white/40"
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
+
+          {/* Main content */}
+          <div className="px-5 py-4">
+            {/* Headline */}
+            <p className="text-[16px] font-bold leading-snug text-white/95 mb-1">
+              {headline.replace(/^(CRITICAL|WARNING):\s*/, "")}
+            </p>
+            {whatHappened && (
+              <p className="text-[13px] leading-relaxed text-white/40 mb-5 max-w-2xl">
+                {whatHappened}
+              </p>
+            )}
+
+            {/* Metrics row */}
+            <div className="grid grid-cols-4 gap-2 mb-4">
+              <MetricChip
+                icon={<Network className="size-3" />}
+                value={String(affectedCount)}
+                label="affected"
+              />
+              <MetricChip
+                icon={<Zap className="size-3" />}
+                value={String(maxDepth)}
+                label="depth"
+              />
+              <MetricChip
+                icon={<DollarSign className="size-3" />}
+                value={formatMoney(revenuePerMin)}
+                label="/min"
+                accent
+              />
+              <MetricChip
+                icon={<Clock className="size-3" />}
+                value={duration}
+                label="elapsed"
+              />
+            </div>
+
+            {/* Root cause snippet */}
+            {rootCause && (
+              <div className="mb-4 rounded-xl border border-white/[0.04] bg-white/[0.02] px-4 py-3">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <Target className="size-3 text-red-400" />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-white/30" style={{ fontFamily: "var(--font-mono)" }}>
+                    Root cause
+                  </span>
+                </div>
+                <p className="text-[12px] leading-relaxed text-white/50">
+                  {rootCause.length > 200 ? rootCause.slice(0, 200) + "..." : rootCause}
+                </p>
+              </div>
+            )}
+
+            {/* Expandable details */}
+            {fixPriority && (
+              <button
+                type="button"
+                onClick={() => setShowDetails((v) => !v)}
+                className="mb-4 flex w-full items-center gap-2 rounded-xl border border-white/[0.04] bg-white/[0.02] px-4 py-2.5 text-left transition-colors hover:bg-white/[0.04]"
+              >
+                <Wrench className="size-3 text-purple-400" />
+                <span className="flex-1 text-[11px] font-medium text-white/40">Fix priority</span>
+                <ChevronDown
+                  className="size-3 text-white/20 transition-transform duration-200"
+                  style={{ transform: showDetails ? "rotate(0deg)" : "rotate(-90deg)" }}
+                />
+              </button>
+            )}
+
+            <AnimatePresence initial={false}>
+              {showDetails && fixPriority && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+                  className="overflow-hidden -mt-2 mb-4"
+                >
+                  <div className="rounded-xl border border-purple-500/10 bg-purple-500/[0.03] px-4 py-3">
+                    <p className="text-[12px] leading-relaxed text-white/45">
+                      {fixPriority}
+                    </p>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* CTAs */}
+            <div className="flex items-center gap-2">
+              <Link
+                href={`/incidents/${incidentId}`}
+                className="flex items-center gap-2 rounded-xl border border-white/[0.06] bg-white/[0.04] px-4 py-2.5 text-[12px] font-semibold text-white/70 transition-all hover:bg-white/[0.06] hover:text-white/90"
+              >
+                View incident
+                <ArrowRight className="size-3" />
+              </Link>
+              <button
+                type="button"
+                onClick={() => setShowResolveConfirm(true)}
+                disabled={isMutating}
+                className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-[12px] font-semibold text-white transition-all duration-200 hover:bg-emerald-600/90 hover:shadow-[0_0_16px_rgba(16,185,129,0.2)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isMutating ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <ShieldCheck className="size-3.5" />
+                )}
+                Resolve
+              </button>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* Confirm dialog for resolve */}
+      <ConfirmDialog
+        open={showResolveConfirm}
+        onClose={() => setShowResolveConfirm(false)}
+        onConfirm={handleResolve}
+        title="Resolve this incident?"
+        description="This will mark the incident as resolved and all affected services will return to healthy."
+        confirmLabel="Resolve incident"
+        cancelLabel="Cancel"
+        variant="success"
+        stats={[
+          { icon: Network, label: "Services affected", value: String(affectedCount) },
+          { icon: Clock, label: "Duration", value: duration },
+          { icon: DollarSign, label: "Revenue at risk", value: `${formatMoney(revenuePerMin)}/min`, accent: true },
+          { icon: DollarSign, label: "Total impact", value: formatMoneyFull(totalImpact), accent: true },
+        ]}
+        successTitle="Incident resolved"
+        successDescription={`${affectedCount} services recovered. Total impact over ${duration}.`}
+        successStats={[
+          { label: "Duration", value: duration },
+          { label: "Services recovered", value: String(affectedCount) },
+          { label: "Total impact", value: formatMoneyFull(totalImpact) },
+        ]}
+      />
+    </>
+  );
+}
+
+function MetricChip({
+  icon,
+  value,
+  label,
+  accent = false,
+}: {
+  icon: React.ReactNode;
+  value: string;
+  label: string;
+  accent?: boolean;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-1 rounded-xl border border-white/[0.04] bg-white/[0.02] px-2 py-2.5 transition-colors hover:bg-white/[0.04]">
+      <span className="text-white/25">{icon}</span>
+      <span
+        className={cn(
+          "text-[16px] font-black tracking-tight",
+          accent ? "text-rose-400" : "text-white/90"
+        )}
+        style={{ fontFamily: "var(--font-mono)" }}
+      >
+        {value}
+      </span>
+      <span className="text-[8px] font-medium uppercase tracking-wider text-white/25">
+        {label}
+      </span>
+    </div>
+  );
+}
+
+===== FILE: src/components/dashboard/incident-summary.tsx =====
+"use client";
+
+import { useState, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  ChevronDown, Copy, Check,
+  AlertTriangle, Target, Zap, DollarSign, Wrench, BarChart3,
+  Clock, Network
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+import { useIncidentSummary } from "@/lib/hooks/use-summary";
+import { useIncident } from "@/lib/hooks/use-incident";
+
+interface IncidentSummaryProps {
+  incidentId: string;
+}
+
+export function IncidentSummary({ incidentId }: IncidentSummaryProps) {
+  const { data: summary, isLoading } = useIncidentSummary(incidentId);
+  const { data: incident } = useIncident(incidentId);
+  const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const headline = summary?.ai?.headline ?? "";
+  const affectedCount = incident?.incident?.affectedServiceCount ?? 0;
+  const maxDepth = incident?.incident?.maxDepth ?? 0;
+  const revenuePerMin = incident?.revenueImpact?.totalRevenuePerMinCents ?? 0;
+  const startedAt = incident?.incident?.startedAt;
+
+  const duration = (() => {
+    if (!startedAt) return "—";
+    const diff = Math.max(0, Date.now() - new Date(startedAt).getTime());
+    const m = Math.floor(diff / 60000);
+    const h = Math.floor(m / 60);
+    const mm = m % 60;
+    if (h > 0) return `${h}h ${mm}m`;
+    return `${m}m`;
+  })();
+
+  const severity = headline.includes("CRITICAL") ? "critical" : headline.includes("WARNING") ? "warning" : "info";
+
+  const handleCopy = useCallback(async () => {
+    if (!headline) return;
+    await navigator.clipboard.writeText(headline);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [headline]);
+
+  if (isLoading && !summary) {
+    return (
+      <div className="overflow-hidden rounded-2xl border border-white/[0.04] bg-[var(--fl-surface)] shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
+        <div className="space-y-3 p-4">
+          {[0, 1].map((i) => (
+            <div key={i} className="h-10 animate-pulse rounded-xl bg-[var(--fl-surface-raised)]" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (!summary?.ai) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
+    >
+      <div className="overflow-hidden rounded-2xl border border-white/[0.04] bg-[var(--fl-surface)] shadow-[0_2px_12px_rgba(0,0,0,0.25)]">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-white/[0.04] px-4 py-3">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="size-3.5 text-indigo-400" />
+            <span className="text-[10px] font-semibold tracking-[0.12em] uppercase text-indigo-400" style={{ fontFamily: "var(--font-mono)" }}>
+              AI Summary
+            </span>
+          </div>
+          <span
+            className={cn(
+              "inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
+              severity === "critical"
+                ? "border border-red-500/25 bg-red-500/10 text-red-400"
+                : severity === "warning"
+                ? "border border-amber-500/25 bg-amber-500/10 text-amber-400"
+                : "border border-blue-500/25 bg-blue-500/10 text-blue-400"
+            )}
+            style={{ fontFamily: "var(--font-mono)" }}
+          >
+            {severity}
+          </span>
+        </div>
+
+        {/* Headline + copy */}
+        <div className="border-b border-white/[0.04] px-4 py-3.5">
+          <div className="flex items-start justify-between gap-2">
+            <p className="min-w-0 flex-1 text-[13px] font-bold leading-relaxed text-[var(--fl-text-primary)]">
+              {headline}
+            </p>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="shrink-0 rounded-lg p-1.5 text-[var(--fl-text-tertiary)] transition-colors hover:bg-[var(--fl-surface-raised)] hover:text-[var(--fl-text-secondary)]"
+            >
+              {copied ? <Check className="size-3 text-emerald-400" /> : <Copy className="size-3" />}
+            </button>
+          </div>
+
+          {/* Mini stats */}
+          <div className="mt-3 grid grid-cols-4 gap-1.5">
+            <div className="flex flex-col items-center gap-0.5 rounded-lg border border-white/[0.04] bg-[var(--fl-surface-raised)] px-1 py-2">
+              <span className="font-metric text-[14px] font-bold text-[var(--fl-text-primary)]">{affectedCount}</span>
+              <span className="text-[8px] text-[var(--fl-text-tertiary)]">affected</span>
+            </div>
+            <div className="flex flex-col items-center gap-0.5 rounded-lg border border-white/[0.04] bg-[var(--fl-surface-raised)] px-1 py-2">
+              <span className="font-metric text-[14px] font-bold text-[var(--fl-text-primary)]">{maxDepth}</span>
+              <span className="text-[8px] text-[var(--fl-text-tertiary)]">depth</span>
+            </div>
+            <div className="flex flex-col items-center gap-0.5 rounded-lg border border-white/[0.04] bg-[var(--fl-surface-raised)] px-1 py-2">
+              <span className="font-metric text-[14px] font-bold text-[var(--fl-accent-revenue)]">
+                {revenuePerMin >= 100000 ? `$${(revenuePerMin / 100000).toFixed(1)}k` : `$${(revenuePerMin / 100).toFixed(0)}`}
+              </span>
+              <span className="text-[8px] text-[var(--fl-text-tertiary)]">/min</span>
+            </div>
+            <div className="flex flex-col items-center gap-0.5 rounded-lg border border-white/[0.04] bg-[var(--fl-surface-raised)] px-1 py-2">
+              <span className="font-metric text-[14px] font-bold text-[var(--fl-text-primary)]">{duration}</span>
+              <span className="text-[8px] text-[var(--fl-text-tertiary)]">elapsed</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Expandable full summary */}
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex w-full items-center gap-2 px-4 py-2.5 text-left transition-colors hover:bg-[var(--fl-surface-raised)]/50"
+        >
+          <FileText className="size-3 text-[var(--fl-text-tertiary)]" />
+          <span className="flex-1 text-[11px] font-medium text-[var(--fl-text-secondary)]">Full analysis</span>
+          <ChevronDown
+            className="size-3 text-[var(--fl-text-tertiary)] transition-transform duration-200"
+            style={{ transform: expanded ? "rotate(0deg)" : "rotate(-90deg)" }}
+          />
+        </button>
+
+        <AnimatePresence initial={false}>
+          {expanded && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+              className="overflow-hidden"
+            >
+              <div className="border-t border-white/[0.04] px-4 py-3">
+                <p className="text-[11px] leading-relaxed text-[var(--fl-text-tertiary)]">
+                  {summary.ai.fullSummary}
+                </p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </motion.div>
+  );
+}
+
+===== FILE: src/components/dashboard/revenue-timeline.tsx =====
+"use client";
+
+import { useMemo } from "react";
+import {
+  Area,
+  AreaChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { useIncident } from "@/lib/hooks/use-incident";
+
+interface RevenueTimelineProps {
+  incidentId: string;
+  startedAt: string;
+}
+
+interface Point {
+  minute: number;
+  cumulative: number;
+}
+
+function buildSeries(ratePerMinCents: number, startedAt: string): Point[] {
+  const elapsedMin = Math.max(1, (Date.now() - new Date(startedAt).getTime()) / 60000);
+  const ratePerMinDollars = ratePerMinCents / 100;
+  const steps = 24;
+  const points: Point[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const minute = (elapsedMin * i) / steps;
+    points.push({
+      minute: Math.round(minute * 10) / 10,
+      cumulative: Math.round(ratePerMinDollars * minute * 100) / 100,
+    });
+  }
+  return points;
+}
+
+export function RevenueTimeline({ incidentId, startedAt }: RevenueTimelineProps) {
+  const { data } = useIncident(incidentId);
+  const rate = data?.revenueImpact.totalRevenuePerMinCents ?? 0;
+
+  const series = useMemo(() => buildSeries(rate, startedAt), [rate, startedAt]);
+  const total = series.length ? series[series.length - 1].cumulative : 0;
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-[var(--fl-border-subtle)] bg-[var(--fl-surface)]">
+      <div className="flex items-center justify-between border-b border-[var(--fl-border-subtle)] px-4 py-3">
+        <div>
+          <h3 className="text-[13px] font-semibold text-[var(--fl-text-primary)]">Revenue impact</h3>
+          <p className="text-[11px] text-[var(--fl-text-tertiary)]">Cumulative loss since incident start</p>
+        </div>
+        <span className="text-glow-revenue font-metric text-[20px] font-bold text-[var(--fl-accent-revenue)]">
+          ${total.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+        </span>
+      </div>
+
+      <div style={{ width: "100%", height: 180, minWidth: 0, minHeight: 0 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={series} margin={{ top: 10, right: 12, left: 4, bottom: 4 }}>
+            <defs>
+              <linearGradient id="fl-revenue-grad" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#F43F5E" stopOpacity={0.3} />
+                <stop offset="100%" stopColor="#F43F5E" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <XAxis
+              dataKey="minute"
+              tickFormatter={(v) => `${v}m`}
+              stroke="#475569"
+              fontSize={10}
+              tickLine={false}
+              axisLine={false}
+              minTickGap={28}
+              tick={{ fontFamily: "var(--font-mono)" }}
+            />
+            <YAxis
+              tickFormatter={(v) => `$${v >= 1000 ? `{(v / 1000).toFixed(1)}k` : v}`}
+              stroke="#475569"
+              fontSize={10}
+              tickLine={false}
+              axisLine={false}
+              width={50}
+              tick={{ fontFamily: "var(--font-mono)" }}
+            />
+            <Tooltip
+              contentStyle={{
+                background: "#111318",
+                border: "1px solid #1E2128",
+                borderRadius: "8px",
+                fontSize: "11px",
+                fontFamily: "var(--font-mono)",
+                color: "#F1F5F9",
+              }}
+              labelStyle={{ color: "#94A3B8" }}
+              formatter={(value: number) => [`$$$${value.toLocaleString("en-US")}`, "Total"]}
+              labelFormatter={(label) => `${label} min elapsed`}
+            />
+            <Area
+              type="monotone"
+              dataKey="cumulative"
+              stroke="#F43F5E"
+              strokeWidth={2}
+              fill="url(#fl-revenue-grad)"
+              isAnimationActive
+              animationDuration={600}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+===== FILE: src/components/graph/graph-canvas.tsx =====
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Maximize2, Minimize2, Minus, Plus, Workflow } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { DepthLegend } from "@/components/graph/depth-legend";
+import { GraphSkeleton } from "@/components/shared/loading-skeleton";
+import { NodeDetailPanel } from "@/components/graph/node-detail-panel";
+import { useServiceGraph } from "@/lib/hooks/use-service-graph";
+import { useIncident } from "@/lib/hooks/use-incident";
+import {
+  computeLayout,
+  drawNode,
+  drawLabel,
+  drawShockwave,
+  type LayoutNode,
+} from "@/components/graph/service-node";
+import { drawEdge, type LayoutEdge } from "@/components/graph/dependency-edge";
+import {
+  formatClassification,
+  formatHealthStatus,
+  formatOwnerTeam,
+} from "@/lib/utils/format";
+
+interface GraphCanvasProps {
+  activeIncidentId: string | null;
+}
+
+interface Camera {
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+const CANVAS_W = 1200;
+const CANVAS_H = 720;
+
+const CASCADE_DEPTH_DELAY = 380;
+const CASCADE_NODE_DURATION = 500;
+
+function drawDotGrid(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  cam: Camera,
+  time: number
+) {
+  const spacing = 28;
+  const driftX = (time * 0.004) % spacing;
+  const driftY = (time * 0.0025) % spacing;
+  const startX = Math.floor(-cam.offsetX / cam.scale / spacing) * spacing - spacing + driftX;
+  const startY = Math.floor(-cam.offsetY / cam.scale / spacing) * spacing - spacing + driftY;
+  const endX = startX + w / cam.scale + spacing * 4;
+  const endY = startY + h / cam.scale + spacing * 4;
+
+  ctx.fillStyle = "rgba(148, 163, 184, 0.04)";
+  for (let x = startX; x < endX; x += spacing) {
+    for (let y = startY; y < endY; y += spacing) {
+      ctx.beginPath();
+      ctx.arc(x, y, 1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function isFiniteNum(v: number): boolean {
+  return Number.isFinite(v) && !Number.isNaN(v);
+}
+
+function MiniMap({
+  nodes,
+  camera,
+  containerW,
+  containerH,
+}: {
+  nodes: LayoutNode[];
+  camera: Camera;
+  containerW: number;
+  containerH: number;
+}) {
+  const mapW = 140;
+  const mapH = 90;
+
+  if (
+    !isFiniteNum(camera.scale) ||
+    camera.scale <= 0 ||
+    !isFiniteNum(camera.offsetX) ||
+    !isFiniteNum(camera.offsetY) ||
+    containerW <= 0 ||
+    containerH <= 0
+  ) {
+    return null;
+  }
+
+  if (containerW < 400) return null;
+
+  const scaleX = mapW / CANVAS_W;
+  const scaleY = mapH / CANVAS_H;
+
+  const rawVpX = (-camera.offsetX / camera.scale) * scaleX;
+  const rawVpY = (-camera.offsetY / camera.scale) * scaleY;
+  const rawVpW = (containerW / camera.scale) * scaleX;
+  const rawVpH = (containerH / camera.scale) * scaleY;
+
+  if (!isFiniteNum(rawVpX) || !isFiniteNum(rawVpY) || !isFiniteNum(rawVpW) || !isFiniteNum(rawVpH)) {
+    return null;
+  }
+
+  const vpX = Math.max(0, rawVpX);
+  const vpY = Math.max(0, rawVpY);
+  const vpW = Math.min(rawVpW, mapW);
+  const vpH = Math.min(rawVpH, mapH);
+
+  return (
+    <div
+      className="pointer-events-none absolute bottom-3 left-3 z-10 overflow-hidden rounded-lg border border-white/[0.04] bg-[var(--fl-surface)]/80 shadow-lg backdrop-blur-sm"
+      style={{ width: mapW, height: mapH }}
+    >
+      <div className="relative size-full">
+        {nodes.map((n) => {
+          const dotColor =
+            n.depth === 0 ? "#ef4444" : n.depth > 0 ? "#f59e0b" : "#10b981";
+          return (
+            <div
+              key={n.id}
+              className="absolute rounded-full"
+              style={{
+                left: n.x * scaleX - 2,
+                top: n.y * scaleY - 2,
+                width: 4,
+                height: 4,
+                backgroundColor: dotColor,
+                opacity: n.depth >= 0 ? 1 : 0.4,
+              }}
+            />
+          );
+        })}
+        {vpW > 0 && vpH > 0 && (
+          <div
+            className="absolute border border-indigo-500/50 bg-indigo-500/[0.06]"
+            style={{
+              left: vpX,
+              top: vpY,
+              width: vpW,
+              height: vpH,
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function GraphCanvas({ activeIncidentId }: GraphCanvasProps) {
+  const { data: graph } = useServiceGraph();
+  const { data: incident } = useIncident(activeIncidentId);
+
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const cameraRef = useRef<Camera>({ scale: 1, offsetX: 0, offsetY: 0 });
+  const dragRef = useRef<{ x: number; y: number } | null>(null);
+  const rafRef = useRef<number>(0);
+  const hasIncident = !!activeIncidentId;
+
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  const [selectedNode, setSelectedNode] = useState<LayoutNode | null>(null);
+
+  const cascadeStartRef = useRef(0);
+  const resolutionStartRef = useRef(0);
+  const wasIncidentRef = useRef(false);
+  const lastDepthMapRef = useRef<Map<string, number>>(new Map());
+
+  const [hovered, setHovered] = useState<{
+    node: LayoutNode;
+    screenX: number;
+    screenY: number;
+  } | null>(null);
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
+  const [, force] = useState(0);
+
+  const touchRef = useRef<{
+    dist: number;
+    midX: number;
+    midY: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (hasIncident) {
+      cascadeStartRef.current = -1;
+      resolutionStartRef.current = 0;
+      wasIncidentRef.current = true;
+    } else if (wasIncidentRef.current && cascadeStartRef.current !== 0) {
+      resolutionStartRef.current = -1;
+    }
+  }, [hasIncident]);
+
+  const toggleFullscreen = useCallback(async () => {
+    const el = wrapperRef.current;
+    if (!el) return;
+
+    if (!document.fullscreenElement) {
+      try {
+        await el.requestFullscreen();
+        setIsFullscreen(true);
+      } catch {
+        // ignore
+      }
+    } else {
+      try {
+        await document.exitFullscreen();
+        setIsFullscreen(false);
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    const handler = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener("fullscreenchange", handler);
+    return () => document.removeEventListener("fullscreenchange", handler);
+  }, []);
+
+  const fitCamera = useCallback((width: number, height: number) => {
+    const cam = cameraRef.current;
+    const fit = Math.min(width / CANVAS_W, height / CANVAS_H) * 0.88;
+    if (fit > 0 && isFinite(fit)) {
+      cam.scale = fit;
+      cam.offsetX = (width - CANVAS_W * fit) / 2;
+      cam.offsetY = (height - CANVAS_H * fit) / 2;
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const canvas = canvasRef.current;
+      const container = containerRef.current;
+      if (!canvas || !container) return;
+
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      canvas.style.width = rect.width + "px";
+      canvas.style.height = rect.height + "px";
+      setContainerSize({ w: rect.width, h: rect.height });
+
+      fitCamera(rect.width, rect.height);
+      force((n) => n + 1);
+    }, 150);
+
+    return () => clearTimeout(timer);
+  }, [isFullscreen, fitCamera]);
+
+  const depthMap = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!incident) return map;
+    map.set(incident.rootCause.serviceId, 0);
+    for (const entry of incident.blastRadius) {
+      if (!map.has(entry.serviceId)) {
+        map.set(entry.serviceId, entry.depth);
+      }
+    }
+    return map;
+  }, [incident]);
+
+  const layout = useMemo(() => {
+    if (!graph) return null;
+    const nodes = computeLayout(graph.nodes, graph.edges, CANVAS_W, CANVAS_H);
+    const index = new Map(nodes.map((n) => [n.id, n]));
+    const edges: LayoutEdge[] = graph.edges
+      .map((e) => {
+        const source = index.get(e.sourceServiceId);
+        const target = index.get(e.targetServiceId);
+        if (!source || !target) return null;
+        return {
+          id: e.id,
+          source,
+          target,
+          dependencyType: e.dependencyType,
+          active: false,
+        } satisfies LayoutEdge;
+      })
+      .filter((e): e is LayoutEdge => e !== null);
+    return { nodes, edges, index };
+  }, [graph]);
+
+  useEffect(() => {
+    if (!layout) return;
+
+    if (depthMap.size > 0) {
+      lastDepthMapRef.current = new Map(depthMap);
+    }
+
+    const activeMap =
+      depthMap.size > 0
+        ? depthMap
+        : wasIncidentRef.current
+          ? lastDepthMapRef.current
+          : depthMap;
+
+    for (const n of layout.nodes) {
+      n.depth = activeMap.has(n.id) ? (activeMap.get(n.id) as number) : -1;
+    }
+    for (const e of layout.edges) {
+      e.active = e.source.depth >= 0 && e.target.depth >= 0;
+    }
+  }, [layout, depthMap]);
+
+  useEffect(() => {
+    setSelectedNode(null);
+  }, [activeIncidentId]);
+
+  const draw = useCallback(
+    (time: number) => {
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext("2d");
+      if (!canvas || !ctx || !layout) return;
+
+      if (cascadeStartRef.current === -1) cascadeStartRef.current = time;
+      if (resolutionStartRef.current === -1) resolutionStartRef.current = time;
+
+      const cam = cameraRef.current;
+      const dpr = window.devicePixelRatio || 1;
+      const w = canvas.width / dpr;
+      const h = canvas.height / dpr;
+
+      let maxDepth = 0;
+      for (const n of layout.nodes) {
+        if (n.depth > maxDepth) maxDepth = n.depth;
+      }
+
+      const cascadeElapsed =
+        hasIncident && cascadeStartRef.current > 0
+          ? time - cascadeStartRef.current
+          : 0;
+
+      const isResolving =
+        !hasIncident &&
+        wasIncidentRef.current &&
+        resolutionStartRef.current > 0;
+      const resolutionElapsed = isResolving
+        ? time - resolutionStartRef.current
+        : 0;
+
+      const resolutionDuration =
+        (maxDepth + 1) * CASCADE_DEPTH_DELAY + CASCADE_NODE_DURATION + 1000;
+      if (resolutionElapsed > resolutionDuration) {
+        cascadeStartRef.current = 0;
+        resolutionStartRef.current = 0;
+        wasIncidentRef.current = false;
+      }
+
+      function getNodeProgress(node: LayoutNode): number {
+        if (node.depth < 0) return hasIncident || isResolving ? 0 : 1;
+
+        if (hasIncident) {
+          const nodeDelay = node.depth * CASCADE_DEPTH_DELAY;
+          return Math.min(
+            1,
+            Math.max(0, (cascadeElapsed - nodeDelay) / CASCADE_NODE_DURATION)
+          );
+        }
+
+        if (isResolving) {
+          const reverseDelay = (maxDepth - node.depth) * CASCADE_DEPTH_DELAY;
+          return Math.max(
+            0,
+            1 -
+              Math.max(
+                0,
+                (resolutionElapsed - reverseDelay) / CASCADE_NODE_DURATION
+              )
+          );
+        }
+
+        return 1;
+      }
+
+      const pulse =
+        (Math.sin(time / 700) * 0.55 +
+          Math.sin(time / 1300) * 0.3 +
+          Math.sin(time / 2100) * 0.15 +
+          1) /
+        2;
+
+      ctx.save();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(dpr, dpr);
+
+      ctx.fillStyle = "#08090c";
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.save();
+      ctx.translate(cam.offsetX, cam.offsetY);
+      ctx.scale(cam.scale, cam.scale);
+
+      drawDotGrid(ctx, w, h, cam, time);
+
+      if (hasIncident && cascadeElapsed > 0) {
+        const rootNode = layout.nodes.find((n) => n.depth === 0);
+        if (rootNode) {
+          drawShockwave(ctx, rootNode.x, rootNode.y, cascadeElapsed, maxDepth);
+        }
+      }
+
+      if (isResolving && resolutionElapsed > 0) {
+        const rootNode = layout.nodes.find((n) => n.depth === 0);
+        if (rootNode) {
+          const maxR = 520;
+          const shrinkElapsed = resolutionElapsed;
+          const radius = Math.max(0, maxR - (shrinkElapsed / 1000) * 220);
+          if (radius > 10) {
+            const alpha = 0.15 * (radius / maxR);
+            ctx.beginPath();
+            ctx.arc(rootNode.x, rootNode.y, radius, 0, Math.PI * 2);
+            ctx.strokeStyle = "rgba(16, 185, 129, " + alpha + ")";
+            ctx.lineWidth = Math.max(0.5, 2 * (radius / maxR));
+            ctx.stroke();
+          }
+        }
+      }
+
+      for (const edge of layout.edges) {
+        const srcP = getNodeProgress(edge.source);
+        const tgtP = getNodeProgress(edge.target);
+        const edgeProgress = Math.max(srcP, tgtP);
+        drawEdge(ctx, edge, {
+          time,
+          hasIncident,
+          highlight: false,
+          cascadeProgress: edgeProgress,
+        });
+      }
+
+      for (const node of layout.nodes) {
+        const progress = getNodeProgress(node);
+        drawNode(ctx, node, {
+          hovered: hovered?.node.id === node.id || selectedNode?.id === node.id,
+          pulse,
+          hasIncident,
+          cascadeProgress: progress,
+        });
+      }
+
+      for (const node of layout.nodes) {
+        const progress = getNodeProgress(node);
+        drawLabel(ctx, node, {
+          hovered: hovered?.node.id === node.id || selectedNode?.id === node.id,
+          hasIncident,
+          cascadeProgress: progress,
+        });
+      }
+
+      ctx.restore();
+      ctx.restore();
+
+      rafRef.current = requestAnimationFrame(draw);
+    },
+    [layout, hasIncident, hovered, selectedNode]
+  );
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    const resize = () => {
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      canvas.style.width = rect.width + "px";
+      canvas.style.height = rect.height + "px";
+      setContainerSize({ w: rect.width, h: rect.height });
+
+      fitCamera(rect.width, rect.height);
+    };
+
+    resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [layout, fitCamera]);
+
+  useEffect(() => {
+    rafRef.current = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [draw]);
+
+  const toVirtual = useCallback(
+    (clientX: number, clientY: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return null;
+      const rect = canvas.getBoundingClientRect();
+      const cam = cameraRef.current;
+      if (cam.scale <= 0) return null;
+      return {
+        x: (clientX - rect.left - cam.offsetX) / cam.scale,
+        y: (clientY - rect.top - cam.offsetY) / cam.scale,
+      };
+    },
+    []
+  );
+
+  const hitTest = useCallback(
+    (vx: number, vy: number): LayoutNode | null => {
+      if (!layout) return null;
+      const isMobile = containerSize.w < 640;
+      const hitRadius = isMobile ? 20 : 4;
+      for (const n of layout.nodes) {
+        const dx = n.x - vx;
+        const dy = n.y - vy;
+        if (dx * dx + dy * dy <= (n.radius + hitRadius) ** 2) return n;
+      }
+      return null;
+    },
+    [layout, containerSize.w]
+  );
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (dragRef.current) {
+      const cam = cameraRef.current;
+      cam.offsetX += e.clientX - dragRef.current.x;
+      cam.offsetY += e.clientY - dragRef.current.y;
+      dragRef.current = { x: e.clientX, y: e.clientY };
+      setHovered(null);
+      return;
+    }
+
+    if (containerSize.w < 640) return;
+
+    const v = toVirtual(e.clientX, e.clientY);
+    if (!v) return;
+    const node = hitTest(v.x, v.y);
+    if (node) {
+      const rect = canvasRef.current!.getBoundingClientRect();
+      setHovered({
+        node,
+        screenX: e.clientX - rect.left,
+        screenY: e.clientY - rect.top,
+      });
+    } else if (hovered) {
+      setHovered(null);
+    }
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === "touch") {
+      setHovered(null);
+    }
+    dragRef.current = { x: e.clientX, y: e.clientY };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (dragRef.current) {
+      const dx = e.clientX - dragRef.current.x;
+      const dy = e.clientY - dragRef.current.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const isMobile = containerSize.w < 640;
+      const threshold = isMobile ? 10 : 4;
+
+      if (dist < threshold) {
+        const v = toVirtual(e.clientX, e.clientY);
+        if (v) {
+          const node = hitTest(v.x, v.y);
+          if (node) {
+            setSelectedNode((prev) => (prev?.id === node.id ? null : node));
+          } else {
+            setSelectedNode(null);
+          }
+        }
+      }
+    }
+
+    dragRef.current = null;
+    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+  };
+
+  const handleWheel = (e: React.WheelEvent) => {
+    const cam = cameraRef.current;
+    if (!canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const delta = -e.deltaY * 0.0015;
+    const next = Math.min(3, Math.max(0.3, cam.scale * (1 + delta)));
+    cam.offsetX = mx - ((mx - cam.offsetX) * next) / cam.scale;
+    cam.offsetY = my - ((my - cam.offsetY) * next) / cam.scale;
+    cam.scale = next;
+    force((n) => n + 1);
+  };
+
+  const handleTouchStart = useCallback(
+    (e: React.TouchEvent) => {
+      if (e.touches.length === 2) {
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        const dist = Math.sqrt(
+          Math.pow(t2.clientX - t1.clientX, 2) +
+            Math.pow(t2.clientY - t1.clientY, 2)
+        );
+        const midX = (t1.clientX + t2.clientX) / 2;
+        const midY = (t1.clientY + t2.clientY) / 2;
+        touchRef.current = { dist, midX, midY };
+      }
+    },
+    []
+  );
+
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      if (e.touches.length === 2 && touchRef.current) {
+        e.preventDefault();
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        const newDist = Math.sqrt(
+          Math.pow(t2.clientX - t1.clientX, 2) +
+            Math.pow(t2.clientY - t1.clientY, 2)
+        );
+        const midX = (t1.clientX + t2.clientX) / 2;
+        const midY = (t1.clientY + t2.clientY) / 2;
+
+        const cam = cameraRef.current;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const rect = canvas.getBoundingClientRect();
+        const mx = midX - rect.left;
+        const my = midY - rect.top;
+
+        const ratio = newDist / touchRef.current.dist;
+        const next = Math.min(3, Math.max(0.3, cam.scale * ratio));
+
+        cam.offsetX = mx - ((mx - cam.offsetX) * next) / cam.scale;
+        cam.offsetY = my - ((my - cam.offsetY) * next) / cam.scale;
+
+        cam.offsetX += midX - touchRef.current.midX;
+        cam.offsetY += midY - touchRef.current.midY;
+
+        cam.scale = next;
+        touchRef.current = { dist: newDist, midX, midY };
+        force((n) => n + 1);
+      }
+    },
+    []
+  );
+
+  const handleTouchEnd = useCallback(() => {
+    touchRef.current = null;
+  }, []);
+
+  const zoom = (factor: number) => {
+    const cam = cameraRef.current;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const mx = (rect?.width ?? CANVAS_W) / 2;
+    const my = (rect?.height ?? CANVAS_H) / 2;
+    const next = Math.min(3, Math.max(0.3, cam.scale * factor));
+    cam.offsetX = mx - ((mx - cam.offsetX) * next) / cam.scale;
+    cam.offsetY = my - ((my - cam.offsetY) * next) / cam.scale;
+    cam.scale = next;
+    force((n) => n + 1);
+  };
+
+  const resetView = () => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    fitCamera(rect.width, rect.height);
+    force((n) => n + 1);
+  };
+
+  if (!graph) return <GraphSkeleton />;
+
+  const isMobile = containerSize.w < 640;
+
+  return (
+    <div
+      ref={wrapperRef}
+      className={cn(
+        "relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-white/[0.04] bg-[var(--fl-surface)] shadow-[0_2px_12px_rgba(0,0,0,0.25)]",
+        isFullscreen && "!rounded-none !border-0 !shadow-none"
+      )}
+    >
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.04] px-3 py-2 sm:px-4 sm:py-2.5">
+        <div className="flex min-w-0 items-center gap-1.5 sm:gap-2.5">
+          <Workflow className="size-3.5 shrink-0 text-[var(--fl-text-tertiary)]" />
+          <h3 className="text-[12px] font-semibold text-[var(--fl-text-primary)] sm:text-[13px]">
+            Dependency graph
+          </h3>
+          <span
+            className="hidden rounded-lg border border-white/[0.04] bg-[var(--fl-surface-raised)] px-1.5 py-0.5 text-[11px] text-[var(--fl-text-tertiary)] sm:inline-block"
+            style={{ fontFamily: "var(--font-mono)" }}
+          >
+            {graph.meta.nodeCount} services · {graph.meta.edgeCount} edges
+          </span>
+          <span
+            className="rounded-md border border-white/[0.04] bg-[var(--fl-surface-raised)] px-1 py-0.5 text-[10px] text-[var(--fl-text-tertiary)] sm:hidden"
+            style={{ fontFamily: "var(--font-mono)" }}
+          >
+            {graph.meta.nodeCount}·{graph.meta.edgeCount}
+          </span>
+        </div>
+        <div className="flex items-center gap-0.5 sm:gap-1">
+          <button
+            onClick={() => zoom(0.8)}
+            className="flex size-7 items-center justify-center rounded-lg text-[var(--fl-text-tertiary)] transition-colors hover:bg-[var(--fl-surface-raised)] hover:text-[var(--fl-text-secondary)]"
+            title="Zoom out"
+          >
+            <Minus className="size-3.5" />
+          </button>
+          <button
+            onClick={resetView}
+            className="rounded-lg border border-white/[0.04] bg-[var(--fl-surface-raised)] px-2 py-1 text-[10px] font-medium text-[var(--fl-text-tertiary)] transition-colors hover:text-[var(--fl-text-secondary)] sm:px-2.5"
+            style={{ fontFamily: "var(--font-mono)" }}
+            title="Fit to view"
+          >
+            Fit
+          </button>
+          <button
+            onClick={() => zoom(1.2)}
+            className="flex size-7 items-center justify-center rounded-lg text-[var(--fl-text-tertiary)] transition-colors hover:bg-[var(--fl-surface-raised)] hover:text-[var(--fl-text-secondary)]"
+            title="Zoom in"
+          >
+            <Plus className="size-3.5" />
+          </button>
+          <div className="mx-0.5 hidden h-3 w-px bg-white/[0.06] sm:block" />
+          <button
+            onClick={toggleFullscreen}
+            className="hidden size-7 items-center justify-center rounded-lg text-[var(--fl-text-tertiary)] transition-colors hover:bg-[var(--fl-surface-raised)] hover:text-[var(--fl-text-secondary)] sm:flex"
+            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+          >
+            {isFullscreen ? (
+              <Minimize2 className="size-3.5" />
+            ) : (
+              <Maximize2 className="size-3.5" />
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div
+        ref={containerRef}
+        className={cn(
+          "relative w-full touch-none",
+          isFullscreen
+            ? "h-[calc(100vh-44px)]"
+            : "h-[500px] sm:h-[480px]"
+        )}
+      >
+        <canvas
+          ref={canvasRef}
+          className="size-full cursor-grab active:cursor-grabbing"
+          onPointerMove={handlePointerMove}
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
+          onPointerLeave={() => {
+            dragRef.current = null;
+            setHovered(null);
+          }}
+          onWheel={handleWheel}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+        />
+
+        {containerSize.w > 0 && containerSize.h > 0 && layout && (
+          <MiniMap
+            nodes={layout.nodes}
+            camera={cameraRef.current}
+            containerW={containerSize.w}
+            containerH={containerSize.h}
+          />
+        )}
+
+        <div className="absolute bottom-2.5 right-2.5 z-10 sm:bottom-3 sm:right-3">
+          <DepthLegend />
+        </div>
+
+        <NodeDetailPanel
+          node={selectedNode}
+          onClose={() => setSelectedNode(null)}
+        />
+
+        {hovered && !selectedNode && !isMobile && (
+          <div
+            className="glass-panel pointer-events-none absolute z-20 w-52 rounded-xl px-3 py-2.5 text-[11px]"
+            style={{
+              left: Math.min(
+                hovered.screenX + 14,
+                (containerRef.current?.clientWidth ?? 0) - 220
+              ),
+              top: Math.max(hovered.screenY - 10, 8),
+            }}
+          >
+            <div className="mb-2 flex items-center gap-2">
+              <span
+                className="size-1.5 rounded-full"
+                style={{
+                  backgroundColor:
+                    hovered.node.depth >= 0 ? "#ef4444" : "#10b981",
+                }}
+              />
+              <span
+                className="font-semibold text-[var(--fl-text-primary)]"
+                style={{ fontFamily: "var(--font-mono)" }}
+              >
+                {hovered.node.name}
+              </span>
+            </div>
+            <div className="flex flex-col gap-1">
+              <InfoRow
+                label="Status"
+                value={formatHealthStatus(hovered.node.healthStatus)}
+              />
+              <InfoRow
+                label="Type"
+                value={formatClassification(hovered.node.classification)}
+              />
+              <InfoRow
+                label="Owner"
+                value={formatOwnerTeam(hovered.node.ownerTeam)}
+              />
+              {hovered.node.depth >= 0 && (
+                <InfoRow
+                  label="Cascade"
+                  value={
+                    hovered.node.depth === 0
+                      ? "Root cause"
+                      : "Depth " + hovered.node.depth
+                  }
+                  accent
+                />
+              )}
+              <span className="mt-1 text-[9px] text-[var(--fl-text-tertiary)] opacity-70">
+                Click for details
+              </span>
+            </div>
+          </div>
+        )}
+
+        {isMobile && !selectedNode && (
+          <div className="pointer-events-none absolute bottom-2.5 left-2.5 z-10">
+            <div className="rounded-lg bg-[var(--fl-surface)]/80 px-2 py-1.5 text-[10px] text-[var(--fl-text-tertiary)] backdrop-blur-sm">
+              Tap a node for details · Pinch to zoom · Drag to pan
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InfoRow({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-[var(--fl-text-tertiary)]">{label}</span>
+      <span
+        className={cn(
+          "font-medium",
+          accent ? "text-red-400" : "text-[var(--fl-text-secondary)]"
+        )}
+        style={{ fontFamily: "var(--font-mono)" }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+===== FILE: src/lib/graph/ingest.ts =====
+// ═══════════════════════════════════════════
+// 6. src/lib/graph/ingest.ts
+// ═══════════════════════════════════════════
+
+import { db } from "../db";
+import { services, dependencies, currentTrafficSnapshots } from "../db/schema";
+import { eq, and, sql } from "drizzle-orm";
+import { calculateConfidence } from "./confidence";
+import type { IngestPayload } from "../types";
+
+type ConnectionLike = typeof db;
+
+async function ensureServiceExists(
+  name: string,
+  conn: ConnectionLike
+): Promise<string> {
+  const [existing] = await conn
+    .select({ id: services.id })
+    .from(services)
+    .where(eq(services.name, name))
+    .limit(1);
+
+  if (existing) return existing.id;
+
+  const [created] = await conn
+    .insert(services)
+    .values({
+      name,
+      ownerTeam: "unknown",
+      classification: "internal",
+      healthStatus: "healthy",
+    })
+    .returning({ id: services.id });
+
+  return created.id;
+}
+
+async function upsertDependency(
+  sourceId: string,
+  targetId: string,
+  payload: IngestPayload,
+  conn: ConnectionLike
+): Promise<{ action: "inserted" | "updated"; edgeId: string }> {
+  const [existing] = await conn
+    .select()
+    .from(dependencies)
+    .where(
+      and(
+        eq(dependencies.sourceServiceId, sourceId),
+        eq(dependencies.targetServiceId, targetId),
+        eq(dependencies.dependencyType, payload.type)
+      )
+    )
+    .limit(1);
+
+  const recencyWeight = 1.0;
+  const consistency = 0.9;
+  const newScore = calculateConfidence(
+    payload.frequency,
+    payload.frequency * 1.1,
+    consistency,
+    recencyWeight
+  );
+
+  if (existing) {
+    await conn
+      .update(dependencies)
+      .set({
+        observedFrequency: payload.frequency.toFixed(2),
+        observedLatencyMs: payload.latency.toFixed(2),
+        confidenceScore: Math.max(
+          newScore,
+          parseFloat(existing.confidenceScore ?? "0")
+        ).toFixed(3),
+        lastObservedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(dependencies.id, existing.id));
+
+    return { action: "updated", edgeId: existing.id };
+  }
+
+  const [newEdge] = await conn
+    .insert(dependencies)
+    .values({
+      sourceServiceId: sourceId,
+      targetServiceId: targetId,
+      dependencyType: payload.type,
+      observedFrequency: payload.frequency.toFixed(2),
+      observedLatencyMs: payload.latency.toFixed(2),
+      confidenceScore: newScore.toFixed(3),
+      lastObservedAt: new Date(),
+    })
+    .returning({ id: dependencies.id });
+
+  return { action: "inserted", edgeId: newEdge.id };
+}
+
+async function upsertTrafficSnapshot(
+  sourceId: string,
+  frequency: number,
+  conn: ConnectionLike
+): Promise<void> {
+  const [existingSnapshot] = await conn
+    .select()
+    .from(currentTrafficSnapshots)
+    .where(eq(currentTrafficSnapshots.serviceId, sourceId))
+    .limit(1);
+
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  if (existingSnapshot) {
+    await conn
+      .update(currentTrafficSnapshots)
+      .set({
+        avgRequestsPerMin: frequency.toFixed(2),
+        recalculatedAt: now,
+      })
+      .where(eq(currentTrafficSnapshots.serviceId, sourceId));
+  } else {
+    await conn.insert(currentTrafficSnapshots).values({
+      serviceId: sourceId,
+      avgRequestsPerMin: frequency.toFixed(2),
+      conversionRate: "0",
+      avgOrderValueCents: 0,
+      revenuePerMinCents: 0,
+      snapshotWindowStart: windowStart,
+      snapshotWindowEnd: now,
+    });
+  }
+}
+
+export async function ingestDependencySummary(
+  payload: IngestPayload,
+  conn: ConnectionLike = db
+): Promise<{ action: "inserted" | "updated"; edgeId: string }> {
+  const sourceId = await ensureServiceExists(payload.source, conn);
+  const targetId = await ensureServiceExists(payload.target, conn);
+
+  if (sourceId === targetId) {
+    throw new Error(
+      `Self-dependency detected: ${payload.source} -> ${payload.target}`
+    );
+  }
+
+  const result = await upsertDependency(sourceId, targetId, payload, conn);
+  await upsertTrafficSnapshot(sourceId, payload.frequency, conn);
+
+  return result;
+}
+
+export async function ingestBatch(
+  payloads: IngestPayload[]
+): Promise<{ inserted: number; updated: number; errors: string[] }> {
+  let inserted = 0;
+  let updated = 0;
+  const errors: string[] = [];
+
+  for (const payload of payloads) {
+    try {
+      const result = await db.transaction(async (tx) => {
+        return await ingestDependencySummary(payload, tx as typeof db);
+      });
+      if (result.action === "inserted") inserted++;
+      else updated++;
+    } catch (error) {
+      errors.push(
+        `${payload.source} -> ${payload.target}: ${(error as Error).message}`
+      );
+    }
+  }
+
+  return { inserted, updated, errors };
+}
+
+

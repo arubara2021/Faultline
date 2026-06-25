@@ -69,11 +69,7 @@ export async function runStaleCleanup(): Promise<{
   confidence: { updated: number };
   snapshots: {
     refreshed: number;
-    services: Array<{
-      name: string;
-      revenuePerMinCents: number;
-      recalculated: boolean;
-    }>;
+    services: Awaited<ReturnType<typeof refreshTrafficSnapshots>>;
   };
 }> {
   const stale = await flagStaleEdges();
@@ -89,6 +85,9 @@ export async function runStaleCleanup(): Promise<{
     confidence: {
       updated: confidenceUpdated,
     },
-    snapshots,
+    snapshots: {
+      refreshed: snapshots.length,
+      services: snapshots,
+    },
   };
 }

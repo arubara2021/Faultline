@@ -472,9 +472,9 @@ export default function HomePage() {
     visible: { opacity: 1, transition: { staggerChildren: 0.1 } },
   };
   const fadeUp = {
-    hidden: { opacity: 0, y: 28 },
-    visible: { opacity: 1, y: 0, transition: { duration: 0.8, ease: [0.16, 1, 0.3, 1] } },
-  };
+  hidden: { opacity: 0, y: 28 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.8, ease: [0.16, 1, 0.3, 1] as const } },
+};
 
   return (
     <div className="relative min-h-[calc(100vh-52px)] overflow-hidden bg-[#040406]">
