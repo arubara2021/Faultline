@@ -1,7 +1,3 @@
-// ═══════════════════════════════════════════
-// 13. src/lib/utils/colors.ts
-// ═══════════════════════════════════════════
-
 export const healthStatusColors = {
   healthy: {
     bg: "bg-emerald-500/10",
@@ -9,6 +5,8 @@ export const healthStatusColors = {
     border: "border-emerald-500/20",
     dot: "bg-emerald-500",
     fill: "#10b981",
+    glow: "rgba(16, 185, 129, 0.25)",
+    ring: "fl-ring-healthy",
   },
   degraded: {
     bg: "bg-amber-500/10",
@@ -16,20 +14,26 @@ export const healthStatusColors = {
     border: "border-amber-500/20",
     dot: "bg-amber-500",
     fill: "#f59e0b",
+    glow: "rgba(245, 158, 11, 0.3)",
+    ring: "fl-ring-degraded",
   },
   down: {
-    bg: "bg-red-500/10",
+    bg: "bg-red-500/15",
     text: "text-red-500",
-    border: "border-red-500/20",
+    border: "border-red-500/30",
     dot: "bg-red-500",
     fill: "#ef4444",
+    glow: "rgba(239, 68, 68, 0.4)",
+    ring: "fl-ring-down",
   },
   unknown: {
-    bg: "bg-zinc-500/10",
-    text: "text-zinc-500",
-    border: "border-zinc-500/20",
-    dot: "bg-zinc-500",
-    fill: "#71717a",
+    bg: "bg-indigo-500/10",
+    text: "text-indigo-500",
+    border: "border-indigo-500/20",
+    dot: "bg-indigo-500",
+    fill: "#6366f1",
+    glow: "rgba(99, 102, 241, 0.25)",
+    ring: "fl-ring-unknown",
   },
 } as const;
 
@@ -73,6 +77,17 @@ export const depthColors = {
   3: { bg: "bg-blue-500/10", text: "text-blue-500", border: "border-blue-500/30", fill: "#3b82f6" },
 } as const;
 
+export const revenue = {
+  primary: "#F43F5E",
+  dim: "#BE123C",
+  glow: "rgba(244, 63, 94, 0.4)",
+} as const;
+
+export const severityColors = {
+  critical: { bg: "bg-red-500/10", text: "text-red-500", fill: "#ef4444" },
+  warning: { bg: "bg-amber-500/10", text: "text-amber-500", fill: "#f59e0b" },
+} as const;
+
 export function getDepthColor(depth: number) {
   if (depth <= 1) return depthColors[1];
   if (depth === 2) return depthColors[2];
@@ -80,24 +95,15 @@ export function getDepthColor(depth: number) {
 }
 
 export function getHealthStatusColor(status: string) {
-  const key = (status in healthStatusColors
-    ? status
-    : "unknown") as HealthStatus;
+  const key = (status in healthStatusColors ? status : "unknown") as HealthStatus;
   return healthStatusColors[key];
 }
 
 export function getClassificationColor(classification: string) {
-  const key = (classification in classificationColors
-    ? classification
-    : "internal") as Classification;
+  const key = (classification in classificationColors ? classification : "internal") as Classification;
   return classificationColors[key];
 }
 
 export function getDependencyTypeColor(depType: string): string {
   return dependencyTypeColors[depType] ?? "#71717a";
 }
-
-export const severityColors = {
-  critical: { bg: "bg-red-500/10", text: "text-red-500", fill: "#ef4444" },
-  warning: { bg: "bg-amber-500/10", text: "text-amber-500", fill: "#f59e0b" },
-} as const;

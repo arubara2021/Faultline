@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 import * as fs from "fs";
 import * as path from "path";
+import "dotenv/config";
 
 async function pushSchema() {
   const pool = new Pool({

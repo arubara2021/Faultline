@@ -1,7 +1,3 @@
-// ═══════════════════════════════════════════
-// 11. src/lib/config.ts
-// ═══════════════════════════════════════════
-
 export const config = {
   isDemoMode: process.env.NEXT_PUBLIC_DEMO_MODE === "true",
 
@@ -15,15 +11,15 @@ export const config = {
     process.env.NEXT_PUBLIC_DEMO_MODE === "true" ? 10_000 : 300_000,
 
   swr: {
-    incident:
-      process.env.NEXT_PUBLIC_DEMO_MODE === "true" ? 1_000 : 5_000,
-    blastRadius:
-      process.env.NEXT_PUBLIC_DEMO_MODE === "true" ? 1_000 : 5_000,
-    services:
-      process.env.NEXT_PUBLIC_DEMO_MODE === "true" ? 2_000 : 10_000,
-    graph:
-      process.env.NEXT_PUBLIC_DEMO_MODE === "true" ? 5_000 : 30_000,
-  },
+  incident:
+    process.env.NEXT_PUBLIC_DEMO_MODE === "true" ? 10_000 : 5_000,
+  blastRadius:
+    process.env.NEXT_PUBLIC_DEMO_MODE === "true" ? 10_000 : 5_000,
+  services:
+    process.env.NEXT_PUBLIC_DEMO_MODE === "true" ? 12_000 : 10_000,
+  graph:
+    process.env.NEXT_PUBLIC_DEMO_MODE === "true" ? 20_000 : 30_000,
+},
 
   errorRateMultiplier: 3,
   latencyMultiplier: 2,
@@ -58,6 +54,16 @@ export const config = {
   summary: {
     maxUpstreamCandidates: 5,
     maxCustomerFacingHighlights: 3,
+  },
+
+  bedrock: {
+    enabled: !!process.env.AWS_BEARER_TOKEN_BEDROCK,
+    modelId: process.env.BEDROCK_MODEL_ID || "amazon.nova-pro-v1:0",
+    region: process.env.AWS_REGION || "us-east-1",
+    timeoutMs: 15_000,
+    maxTokens: 2_000,
+    temperature: 0.3,
+    fallbackOnFailure: true,
   },
 
   api: {

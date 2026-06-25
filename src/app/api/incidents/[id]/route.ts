@@ -1,6 +1,4 @@
-// ═══════════════════════════════════════════
-// 2. src/app/api/incidents/[id]/route.ts
-// ═══════════════════════════════════════════
+// src/app/api/incidents/[id]/route.ts
 
 import { NextRequest, NextResponse } from "next/server";
 import { db, withDbRetry } from "@/lib/db";
@@ -63,25 +61,16 @@ export async function GET(
       );
     }
 
-    const [failedService] = await withDbRetry(() =>
-      db
-        .select()
-        .from(services)
-        .where(eq(services.id, rootFailure.serviceId))
-        .limit(1)
-    );
-
-    if (!failedService) {
-      return errorResponse(
-        404,
-        "SERVICE_NOT_FOUND",
-        "Failed service not found"
-      );
-    }
-
-    const [blastResults, allServices, upstreamCandidates] =
+    // Run remaining queries in parallel instead of sequential
+    const [failedService, blastResults, allServices, upstreamCandidates] =
       await withDbRetry(() =>
         Promise.all([
+          db
+            .select()
+            .from(services)
+            .where(eq(services.id, rootFailure.serviceId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null),
           db
             .select()
             .from(blastRadiusResults)
@@ -90,6 +79,14 @@ export async function GET(
           traverseUpstream(rootFailure.serviceId),
         ])
       );
+
+    if (!failedService) {
+      return errorResponse(
+        404,
+        "SERVICE_NOT_FOUND",
+        "Failed service not found"
+      );
+    }
 
     const serviceMap = new Map(allServices.map((s) => [s.id, s]));
 

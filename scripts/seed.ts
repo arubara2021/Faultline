@@ -1,7 +1,3 @@
-// ═══════════════════════════════════════════
-// 21. scripts/seed.ts
-// ═══════════════════════════════════════════
-
 import "dotenv/config";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
@@ -53,6 +49,9 @@ async function main() {
     postgresPrimary: uuidv4(),
   };
 
+  const now = new Date();
+  const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
+
   console.log("Inserting services...");
   await db.insert(services).values([
     {
@@ -61,6 +60,7 @@ async function main() {
       ownerTeam: "platform",
       classification: "customer-facing",
       healthStatus: "healthy",
+      lastHealthCheckAt: fiveMinAgo,
     },
     {
       id: svcIds.checkoutApi,
@@ -68,6 +68,7 @@ async function main() {
       ownerTeam: "payments",
       classification: "customer-facing",
       healthStatus: "healthy",
+      lastHealthCheckAt: fiveMinAgo,
     },
     {
       id: svcIds.signupFlow,
@@ -75,6 +76,7 @@ async function main() {
       ownerTeam: "growth",
       classification: "customer-facing",
       healthStatus: "healthy",
+      lastHealthCheckAt: fiveMinAgo,
     },
     {
       id: svcIds.productCatalog,
@@ -82,6 +84,7 @@ async function main() {
       ownerTeam: "catalog",
       classification: "customer-facing",
       healthStatus: "healthy",
+      lastHealthCheckAt: fiveMinAgo,
     },
     {
       id: svcIds.cartService,
@@ -89,6 +92,7 @@ async function main() {
       ownerTeam: "checkout",
       classification: "internal",
       healthStatus: "healthy",
+      lastHealthCheckAt: fiveMinAgo,
     },
     {
       id: svcIds.paymentService,
@@ -96,6 +100,7 @@ async function main() {
       ownerTeam: "payments",
       classification: "internal",
       healthStatus: "healthy",
+      lastHealthCheckAt: fiveMinAgo,
     },
     {
       id: svcIds.billingWorker,
@@ -103,6 +108,7 @@ async function main() {
       ownerTeam: "payments",
       classification: "internal",
       healthStatus: "healthy",
+      lastHealthCheckAt: fiveMinAgo,
     },
     {
       id: svcIds.fraudDetector,
@@ -110,6 +116,7 @@ async function main() {
       ownerTeam: "risk",
       classification: "internal",
       healthStatus: "healthy",
+      lastHealthCheckAt: fiveMinAgo,
     },
     {
       id: svcIds.userService,
@@ -117,6 +124,7 @@ async function main() {
       ownerTeam: "accounts",
       classification: "internal",
       healthStatus: "healthy",
+      lastHealthCheckAt: fiveMinAgo,
     },
     {
       id: svcIds.notificationService,
@@ -124,6 +132,7 @@ async function main() {
       ownerTeam: "comms",
       classification: "internal",
       healthStatus: "healthy",
+      lastHealthCheckAt: fiveMinAgo,
     },
     {
       id: svcIds.inventoryService,
@@ -131,6 +140,7 @@ async function main() {
       ownerTeam: "fulfillment",
       classification: "internal",
       healthStatus: "healthy",
+      lastHealthCheckAt: fiveMinAgo,
     },
     {
       id: svcIds.recommendationEngine,
@@ -138,6 +148,7 @@ async function main() {
       ownerTeam: "ml-platform",
       classification: "internal",
       healthStatus: "healthy",
+      lastHealthCheckAt: fiveMinAgo,
     },
     {
       id: svcIds.analyticsCollector,
@@ -145,6 +156,7 @@ async function main() {
       ownerTeam: "data",
       classification: "internal",
       healthStatus: "healthy",
+      lastHealthCheckAt: fiveMinAgo,
     },
     {
       id: svcIds.postgresPrimary,
@@ -152,6 +164,7 @@ async function main() {
       ownerTeam: "infrastructure",
       classification: "infrastructure",
       healthStatus: "down",
+      lastHealthCheckAt: now,
     },
   ]);
   console.log("  14 services inserted.");
@@ -241,7 +254,6 @@ async function main() {
   console.log(`  ${signalRecords.length} health signals inserted.`);
 
   console.log("Inserting traffic snapshots...");
-  const now = new Date();
   const windowStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
   const trafficRecords = [

@@ -1,7 +1,3 @@
-// ═══════════════════════════════════════════
-// 2. src/lib/graph/traversal.ts
-// ═══════════════════════════════════════════
-
 import { db } from "../db";
 import {
   services,
@@ -58,7 +54,9 @@ interface GraphCache {
 }
 
 let graphCache: GraphCache | null = null;
-const CACHE_TTL_MS = 2000;
+let inflightPromise: Promise<GraphCache> | null = null;
+
+const CACHE_TTL_MS = 10_000;
 
 async function loadGraph(): Promise<GraphCache> {
   const now = Date.now();
@@ -66,86 +64,97 @@ async function loadGraph(): Promise<GraphCache> {
     return graphCache;
   }
 
-  const [allServices, allDeps, allSnapshots] = await Promise.all([
-    db
-      .select({
-        id: services.id,
-        name: services.name,
-        classification: services.classification,
-        ownerTeam: services.ownerTeam,
-        healthStatus: services.healthStatus,
-      })
-      .from(services),
-    db
-      .select({
-        id: dependencies.id,
-        sourceServiceId: dependencies.sourceServiceId,
-        targetServiceId: dependencies.targetServiceId,
-        dependencyType: dependencies.dependencyType,
-        confidenceScore: dependencies.confidenceScore,
-      })
-      .from(dependencies),
-    db
-      .select({
-        serviceId: currentTrafficSnapshots.serviceId,
-        revenuePerMinCents: currentTrafficSnapshots.revenuePerMinCents,
-      })
-      .from(currentTrafficSnapshots),
-  ]);
+  // Deduplicate concurrent calls — only one fetch at a time
+  if (inflightPromise) return inflightPromise;
 
-  const serviceMap = new Map<string, ServiceInfo>();
-  for (const s of allServices) {
-    serviceMap.set(s.id, {
-      id: s.id,
-      name: s.name,
-      classification: s.classification,
-      ownerTeam: s.ownerTeam,
-      healthStatus: s.healthStatus,
-    });
-  }
+  inflightPromise = (async () => {
+    try {
+      const [allServices, allDeps, allSnapshots] = await Promise.all([
+        db
+          .select({
+            id: services.id,
+            name: services.name,
+            classification: services.classification,
+            ownerTeam: services.ownerTeam,
+            healthStatus: services.healthStatus,
+          })
+          .from(services),
+        db
+          .select({
+            id: dependencies.id,
+            sourceServiceId: dependencies.sourceServiceId,
+            targetServiceId: dependencies.targetServiceId,
+            dependencyType: dependencies.dependencyType,
+            confidenceScore: dependencies.confidenceScore,
+          })
+          .from(dependencies),
+        db
+          .select({
+            serviceId: currentTrafficSnapshots.serviceId,
+            revenuePerMinCents: currentTrafficSnapshots.revenuePerMinCents,
+          })
+          .from(currentTrafficSnapshots),
+      ]);
 
-  const snapshotMap = new Map<string, number>();
-  for (const s of allSnapshots) {
-    snapshotMap.set(s.serviceId, Number(s.revenuePerMinCents) || 0);
-  }
+      const serviceMap = new Map<string, ServiceInfo>();
+      for (const s of allServices) {
+        serviceMap.set(s.id, {
+          id: s.id,
+          name: s.name,
+          classification: s.classification,
+          ownerTeam: s.ownerTeam,
+          healthStatus: s.healthStatus,
+        });
+      }
 
-  const downstreamAdj = new Map<string, AdjacencyEntry[]>();
-  const upstreamAdj = new Map<string, AdjacencyEntry[]>();
+      const snapshotMap = new Map<string, number>();
+      for (const s of allSnapshots) {
+        snapshotMap.set(s.serviceId, Number(s.revenuePerMinCents) || 0);
+      }
 
-  for (const dep of allDeps) {
-    if (!downstreamAdj.has(dep.targetServiceId)) {
-      downstreamAdj.set(dep.targetServiceId, []);
+      const downstreamAdj = new Map<string, AdjacencyEntry[]>();
+      const upstreamAdj = new Map<string, AdjacencyEntry[]>();
+
+      for (const dep of allDeps) {
+        if (!downstreamAdj.has(dep.targetServiceId)) {
+          downstreamAdj.set(dep.targetServiceId, []);
+        }
+        downstreamAdj.get(dep.targetServiceId)!.push({
+          serviceId: dep.sourceServiceId,
+          depType: dep.dependencyType,
+        });
+
+        if (!upstreamAdj.has(dep.sourceServiceId)) {
+          upstreamAdj.set(dep.sourceServiceId, []);
+        }
+        upstreamAdj.get(dep.sourceServiceId)!.push({
+          serviceId: dep.targetServiceId,
+          depType: dep.dependencyType,
+        });
+      }
+
+      graphCache = {
+        services: serviceMap,
+        downstream: downstreamAdj,
+        upstream: upstreamAdj,
+        snapshots: snapshotMap,
+        rawDeps: allDeps.map((d) => ({
+          id: d.id,
+          sourceServiceId: d.sourceServiceId,
+          targetServiceId: d.targetServiceId,
+          dependencyType: d.dependencyType,
+          confidenceScore: d.confidenceScore ?? "0.000",
+        })),
+        loadedAt: now,
+      };
+
+      return graphCache;
+    } finally {
+      inflightPromise = null;
     }
-    downstreamAdj.get(dep.targetServiceId)!.push({
-      serviceId: dep.sourceServiceId,
-      depType: dep.dependencyType,
-    });
+  })();
 
-    if (!upstreamAdj.has(dep.sourceServiceId)) {
-      upstreamAdj.set(dep.sourceServiceId, []);
-    }
-    upstreamAdj.get(dep.sourceServiceId)!.push({
-      serviceId: dep.targetServiceId,
-      depType: dep.dependencyType,
-    });
-  }
-
-  graphCache = {
-    services: serviceMap,
-    downstream: downstreamAdj,
-    upstream: upstreamAdj,
-    snapshots: snapshotMap,
-    rawDeps: allDeps.map((d) => ({
-      id: d.id,
-      sourceServiceId: d.sourceServiceId,
-      targetServiceId: d.targetServiceId,
-      dependencyType: d.dependencyType,
-      confidenceScore: d.confidenceScore ?? "0.000",
-    })),
-    loadedAt: now,
-  };
-
-  return graphCache;
+  return inflightPromise;
 }
 
 export function invalidateGraphCache(): void {
@@ -217,7 +226,9 @@ export async function traverseDownstream(
     });
   }
 
-  results.sort((a, b) => a.depth - b.depth || a.serviceName.localeCompare(b.serviceName));
+  results.sort(
+    (a, b) => a.depth - b.depth || a.serviceName.localeCompare(b.serviceName)
+  );
   return results;
 }
 
