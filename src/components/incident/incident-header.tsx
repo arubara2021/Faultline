@@ -117,7 +117,7 @@ export function IncidentHeader({
     >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Link
-          href="/"
+          href="/dashboard"
           className="flex items-center gap-1.5 text-[12px] text-[var(--fl-text-tertiary)] transition-colors hover:text-[var(--fl-text-secondary)]"
         >
           <ArrowLeft className="size-3.5" />

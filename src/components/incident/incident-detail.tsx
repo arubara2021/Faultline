@@ -74,7 +74,7 @@ export function IncidentDetail({ incidentId }: IncidentDetailProps) {
           description="This incident may have been resolved or the link is invalid."
         >
           <Link
-            href="/"
+            href="/dashboard"
             className="mt-4 inline-flex items-center gap-2 rounded-lg border border-[var(--fl-border-active)] bg-[var(--fl-surface-raised)] px-4 py-2 text-[13px] font-medium text-[var(--fl-text-secondary)] transition-colors hover:bg-[var(--fl-surface)] hover:text-[var(--fl-text-primary)]"
           >
             Back to dashboard
