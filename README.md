@@ -1,4 +1,3 @@
-```markdown
 # Faultline — Dependency Intelligence Platform
 
 > **Know your blast radius. Quantify every cascading failure. Resolve incidents faster.**
@@ -440,6 +439,3 @@ npx tsx scripts/test-connection.ts
 ## License
 
 Built for the H0 Hackathon. See Devpost for official rules.
-```
-
-That's the full README. You can copy it directly. It covers everything the hackathon judges care about — especially the heavy emphasis on how Aurora PostgreSQL is integral to the architecture, not just a data store.
